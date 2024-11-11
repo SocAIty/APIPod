@@ -277,11 +277,8 @@ However starlette background tasks have several drawbacks.
 - Without a job queue, the server can be overloaded with tasks pretty fast.
 - It's not clear when and how to return the result to the client. So you need to write your own "webhook" code.
 - No job progress and monitoring functionality for the client. 
-- No job queue:
-  - If you don't have a job queue, the server can be overloaded with tasks pretty fast.
-  - With socaity you can specify the maximum queue size for a task. If this is exceeded the task is not executed.
 
-This is a good solution for simple tasks, but it does not provide a job queue or job status.
+Starlette-Background-Tasks are a good solution for simple tasks, but you'll hit a wall pretty soon.
 
 
 ## Celery

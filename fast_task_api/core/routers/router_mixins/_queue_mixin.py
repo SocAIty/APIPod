@@ -1,8 +1,9 @@
 import functools
 
 from fast_task_api.CONSTS import SERVER_STATUS
-from fast_task_api.core.JobManager import JobQueue
+from fast_task_api.core.JobQueue import JobQueue
 from fast_task_api.core.job.JobResult import JobResultFactory, JobResult
+
 
 class _QueueMixin:
     """
@@ -25,11 +26,9 @@ class _QueueMixin:
     ):
         """
         Adds an additional wrapper to the API path to add functionality like:
-        - Add api key validation
         - Create a job and add to the job queue
         - Return job
         """
-
         # add the queue to the job queue
         def decorator(func):
             self.job_queue.set_queue_size(func, queue_size)
