@@ -6,8 +6,7 @@ from pydantic import BaseModel
 
 from connectors.settings import DEFAULT_DATE_TIME_FORMAT
 from fast_task_api.compatibility.upload import is_param_media_toolkit_file
-from fast_task_api.core.job import InternalJob
-from fast_task_api.core.job.InternalJob import JOB_STATUS
+from fast_task_api.core.job.base_job import JOB_STATUS, BaseJob
 
 
 class FileResult(BaseModel):
@@ -39,7 +38,7 @@ class JobResult(BaseModel):
 class JobResultFactory:
 
     @staticmethod
-    def from_internal_job(ij: InternalJob) -> JobResult:
+    def from_base_job(ij: BaseJob) -> JobResult:
         format_date = lambda date: date.strftime(DEFAULT_DATE_TIME_FORMAT) if date else None
         created_at = format_date(ij.created_at)
         queued_at = format_date(ij.queued_at)

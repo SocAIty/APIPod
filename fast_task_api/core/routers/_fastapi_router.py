@@ -1,5 +1,6 @@
 import functools
 import inspect
+from fast_task_api.core.utils import get_func_signature, replace_func_signature
 from typing import Union
 from fastapi import APIRouter, FastAPI
 
@@ -7,9 +8,9 @@ from fast_task_api.compatibility.upload import (convert_param_type_to_fast_api_u
                                                 is_param_media_toolkit_file)
 from fast_task_api.settings import FTAPI_PORT, FTAPI_HOST
 from media_toolkit import media_from_any
-from fast_task_api.CONSTS import SERVER_STATUS
-from fast_task_api.core.JobQueue import JobQueue
-from fast_task_api.core.job.JobResult import JobResult, JobResultFactory
+from fast_task_api.CONSTS import SERVER_HEALTH
+from fast_task_api.core.job_queue import JobQueue
+from fast_task_api.core.job.job_result import JobResult, JobResultFactory
 from fast_task_api.core.routers._socaity_router import _SocaityRouter
 from fast_task_api.core.routers.router_mixins._queue_mixin import _QueueMixin
 
@@ -46,7 +47,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
         _QueueMixin.__init__(self, *args, **kwargs)
 
         self.job_queue = JobQueue()
-        self.status = SERVER_STATUS.INITIALIZING
+        self.status = SERVER_HEALTH.INITIALIZING
 
         # Configuring the fastapi app and router
         if app is None:
@@ -65,8 +66,9 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
         self.app.openapi = self.custom_openapi
 
     def add_standard_routes(self):
-        self.api_route(path="/job", methods=["GET", "POST"])(self.get_job)
-        self.api_route(path="/status", methods=["GET", "POST"])(self.get_status)
+        #self.api_route(path="/status", methods=["GET", "POST"])(self.get_job)
+        self.api_route(path="/health", methods=["GET"])(self.get_health)
+        #self.api_route(path="/cancel", methods=["POST"])(self.get_status)
         # ToDo: add favicon
         #self.api_route('/favicon.ico', include_in_schema=False)(self.favicon)
 
@@ -89,24 +91,37 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
         if internal_job is None:
             return JobResultFactory.job_not_found(job_id)
 
-        ret_job = JobResultFactory.from_internal_job(internal_job)
-        ret_job.refresh_job_url = f"/job?job_id={ret_job.id}"
+        ret_job = JobResultFactory.from_base_job(internal_job)
+        ret_job.refresh_job_url = f"/status?job_id={ret_job.id}"
 
         if return_format != 'json':
             ret_job = JobResultFactory.gzip_job_result(ret_job)
 
         return ret_job
 
+    def cancel_job(self, job_id: str):
+        """
+        Cancel the job with the given job_id.
+        :param job_id: The id of the job.
+        """
+        internal_job = self.job_queue.get_job(job_id, keep_in_memory=False)
+        if internal_job is None:
+            return JobResultFactory.job_not_found(job_id)
+
+        return "Cancelled"
+
+        #internal_job.cancel()
+        #return JobResultFactory.job_canceled(internal_job)
+
     @staticmethod
-    def _job_progress_signature_change(func: callable) -> callable:
-        # either param type is JobProgress or the name is job_progress
-        sig_params = inspect.signature(func).parameters.values()
-        new_sig = inspect.signature(func).replace(parameters=[
-            p for p in sig_params
+    def _remove_job_progress_from_signature(func: callable) -> callable:
+        sig = get_func_signature(func)
+        new_sig = sig.replace(parameters=[
+            p for p in sig.parameters.values()
             if p.name != "job_progress" and "JobProgress" not in p.annotation.__name__
         ])
-        func.__signature__ = new_sig
-        return func
+        return replace_func_signature(func, new_sig)
+
 
     def _handle_file_uploads(self, func: callable) -> callable:
         """
@@ -115,7 +130,8 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
         """
 
         # original func parameter names: needed multiple times
-        original_func_parameters = inspect.signature(func).parameters.values()
+        original_func_sig = get_func_signature(func)
+        original_func_parameters = original_func_sig.parameters.values()
         # create a dict to store the params that are UploadFiles
         # this is used to later map the file while reading
         upload_params = {
@@ -144,13 +160,13 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
             return func(**n_kwargs)
 
         # replace signature with fastapi signature
-        new_sig = inspect.signature(func).replace(parameters=[
+        new_sig = original_func_sig.replace(parameters=[
             convert_param_type_to_fast_api_upload_file(param)
             if is_param_media_toolkit_file(param) else param
             for param in original_func_parameters
         ])
         file_upload_wrapper.__signature__ = new_sig
-        func.__signature__ = new_sig
+        func = replace_func_signature(func, new_sig)
 
         return file_upload_wrapper
 
@@ -190,11 +206,12 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
             *args,
             **kwargs
         )
+
         def decorator(func):
             # add the queue to the job queue
             queue_decorated = queue_router_decorator_func(func)
             # remove job_progress from the function signature to display nice for fastapi
-            job_progress_removed = self._job_progress_signature_change(queue_decorated)
+            job_progress_removed = self._remove_job_progress_from_signature(queue_decorated)
             # modify file uploads for compatibility reasons
             file_upload_modified = self._handle_file_uploads(job_progress_removed)
             # modify file responses so that functions can return multimodal files.

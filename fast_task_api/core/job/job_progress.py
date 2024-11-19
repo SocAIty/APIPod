@@ -19,7 +19,7 @@ class JobProgressRunpod(JobProgress):
         super().__init__(progress=progress, message=message)
         self.runpod_job = runpod_job
 
-    def set_status(self, progress: float, message: str):
+    def set_status(self, progress: float, message: str = None):
         super().set_status(progress=progress, message=message)
         import runpod
         runpod.serverless.progress_update(

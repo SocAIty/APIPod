@@ -1,6 +1,6 @@
 from typing import Union
 
-from fast_task_api.CONSTS import SERVER_STATUS, FTAPI_DEPLOYMENTS
+from fast_task_api.CONSTS import SERVER_HEALTH, FTAPI_DEPLOYMENTS
 from fast_task_api.settings import FTAPI_DEPLOYMENT, FTAPI_PORT
 
 
@@ -18,14 +18,22 @@ class _SocaityRouter:
 
         self.title = title
         self.summary = summary
-        self.status = SERVER_STATUS.INITIALIZING
+        self.status = SERVER_HEALTH.INITIALIZING
 
-    def get_status(self) -> SERVER_STATUS:
+    def get_health(self) -> SERVER_HEALTH:
         return self.status
 
     def get_job(self, job_id: str):
         """
         Get the job with the given job_id if it exists.
+        :param job_id: The job id of a previously created job by requesting a task_endpoint.
+        :return:
+        """
+        raise NotImplementedError("Implement in subclass")
+
+    def cancel_job(self, job_id: str):
+        """
+        Cancel the job with the given job_id if it exists.
         :param job_id: The job id of a previously created job by requesting a task_endpoint.
         :return:
         """

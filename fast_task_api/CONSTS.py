@@ -8,7 +8,7 @@ class FTAPI_DEPLOYMENTS(Enum):
     HOSTED = "hosted"
     SERVERLESS = "serverless"
 
-class SERVER_STATUS(Enum):
+class SERVER_HEALTH(Enum):
     INITIALIZING = "initializing"
     BOOTING = "booting"
     RUNNING = "running"

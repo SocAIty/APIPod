@@ -1,8 +1,8 @@
 import functools
 
-from fast_task_api.CONSTS import SERVER_STATUS
-from fast_task_api.core.JobQueue import JobQueue
-from fast_task_api.core.job.JobResult import JobResultFactory, JobResult
+from fast_task_api.CONSTS import SERVER_HEALTH
+from fast_task_api.core.job_queue import JobQueue
+from fast_task_api.core.job.job_result import JobResultFactory, JobResult
 
 
 class _QueueMixin:
@@ -13,7 +13,7 @@ class _QueueMixin:
     """
     def __init__(self, *args, **kwargs):
         self.job_queue = JobQueue()
-        self.status = SERVER_STATUS.INITIALIZING
+        self.status = SERVER_HEALTH.INITIALIZING
 
         # add the get_status function to the routes
         # self.add_api_route(path="/status")
@@ -42,8 +42,8 @@ class _QueueMixin:
                     job_function=func,
                     job_params=wrapped_func_kwargs
                 )
-                ret_job = JobResultFactory.from_internal_job(internal_job)
-                ret_job.refresh_job_url = f"/job?job_id={ret_job.id}"
+                ret_job = JobResultFactory.from_base_job(internal_job)
+                ret_job.refresh_job_url = f"/status?job_id={ret_job.id}"
                 return ret_job
 
             return job_creation_func_wrapper
