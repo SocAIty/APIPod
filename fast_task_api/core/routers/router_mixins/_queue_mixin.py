@@ -38,11 +38,11 @@ class _QueueMixin:
                 # combine args and kwargs
                 wrapped_func_kwargs.update(wrapped_func_args)
                 # create a job and add to the job queue
-                internal_job = self.job_queue.add_job(
+                base_job = self.job_queue.add_job(
                     job_function=func,
                     job_params=wrapped_func_kwargs
                 )
-                ret_job = JobResultFactory.from_base_job(internal_job)
+                ret_job = JobResultFactory.from_base_job(base_job)
                 ret_job.refresh_job_url = f"/status?job_id={ret_job.id}"
                 return ret_job
 

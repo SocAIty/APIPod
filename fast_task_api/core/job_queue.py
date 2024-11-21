@@ -147,6 +147,16 @@ class JobQueue(Generic[T]):
                 self.job_store.remove_completed_job(job_id)
         return job
 
+    def cancel_job(self, job_id: str) -> None:
+        raise NotImplementedError("Job cancellation is not implemented yet.")
+        #if job := self.get_job(job_id):
+        #    job.status = JOB_STATUS.FAILED
+        #    job.job_progress.set_status(1.0, "Job cancelled")
+        #    todo: sent event to thread, make a cancel request...
+        #    self.job_store.complete_job(job_id)
+        #    if thread := self._job_threads.pop(job_id, None):
+        #        thread.join(timeout=0.1)
+
     def shutdown(self) -> None:
         self._shutdown.set()
         if self.worker_thread.is_alive():

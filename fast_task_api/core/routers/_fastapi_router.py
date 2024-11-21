@@ -87,12 +87,13 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
         :param keep_in_memory: If the job should be kept in memory.
             If False, the job is removed after the result is returned.
         """
-        internal_job = self.job_queue.get_job(job_id, keep_in_memory=keep_in_memory)
-        if internal_job is None:
+        base_job = self.job_queue.get_job(job_id, keep_in_memory=keep_in_memory)
+        if base_job is None:
             return JobResultFactory.job_not_found(job_id)
 
-        ret_job = JobResultFactory.from_base_job(internal_job)
+        ret_job = JobResultFactory.from_base_job(base_job)
         ret_job.refresh_job_url = f"/status?job_id={ret_job.id}"
+        ret_job.cancel_job_url = f"/cancel?job_id={ret_job.id}"
 
         if return_format != 'json':
             ret_job = JobResultFactory.gzip_job_result(ret_job)
@@ -104,14 +105,8 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
         Cancel the job with the given job_id.
         :param job_id: The id of the job.
         """
-        internal_job = self.job_queue.get_job(job_id, keep_in_memory=False)
-        if internal_job is None:
-            return JobResultFactory.job_not_found(job_id)
-
-        return "Cancelled"
-
-        #internal_job.cancel()
-        #return JobResultFactory.job_canceled(internal_job)
+        cancelled = self.job_queue.cancel_job(job_id)
+        raise Exception("Not implemented yet. Feel free to contribute.")
 
     @staticmethod
     def _remove_job_progress_from_signature(func: callable) -> callable:

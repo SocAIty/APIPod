@@ -1,12 +1,12 @@
 from datetime import datetime, timedelta
 from typing import Optional
 from uuid import uuid4
-from strenum import StrEnum
+from enum import Enum
 
 from fast_task_api.core.job.job_progress import JobProgress
 
 
-class JOB_STATUS(StrEnum):
+class JOB_STATUS(Enum):
     QUEUED = "Queued"
     PROCESSING = "Processing"
     FINISHED = "Finished"
@@ -14,7 +14,7 @@ class JOB_STATUS(StrEnum):
     TIMEOUT = "Timeout"
 
 
-class PROVIDERS(StrEnum):
+class PROVIDERS(Enum):
     RUNPOD = "runpod"
     OPENAI = "openai"
     REPLICATE = "replicate"
@@ -48,3 +48,17 @@ class BaseJob:
             return 0
         end_time = self.execution_finished_at or datetime.utcnow()
         return int((end_time - self.execution_started_at).total_seconds() * 1000)
+
+    @property
+    def delay_time_ms(self) -> int:
+        """
+        Is the time of the job being created + queued until it was started.
+        If not started the time since creation
+        """
+        if not self.queued_at:
+            return int((datetime.utcnow() - self.queued_at).total_seconds() * 1000)
+
+        if not self.execution_started_at:
+            return int((datetime.utcnow() - self.execution_started_at).total_seconds() * 1000)
+
+        return int((self.execution_started_at - self.created_at).total_seconds() * 1000)

@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 from typing import Union
 
-from connectors.settings import DEFAULT_DATE_TIME_FORMAT
+
 from fast_task_api.CONSTS import SERVER_HEALTH
 from fast_task_api.compatibility.upload import is_param_media_toolkit_file
 from fast_task_api.core.job.base_job import JOB_STATUS
@@ -14,7 +14,7 @@ from fast_task_api.core.job.job_result import JobResult
 from fast_task_api.core.routers._socaity_router import _SocaityRouter
 
 from fast_task_api.CONSTS import FTAPI_DEPLOYMENTS
-from fast_task_api.settings import FTAPI_DEPLOYMENT, FTAPI_PORT
+from fast_task_api.settings import FTAPI_DEPLOYMENT, FTAPI_PORT, DEFAULT_DATE_TIME_FORMAT
 from media_toolkit import media_from_any
 
 

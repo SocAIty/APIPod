@@ -4,9 +4,9 @@ from typing import Optional, Union, Any
 
 from pydantic import BaseModel
 
-from connectors.settings import DEFAULT_DATE_TIME_FORMAT
 from fast_task_api.compatibility.upload import is_param_media_toolkit_file
 from fast_task_api.core.job.base_job import JOB_STATUS, BaseJob
+from fast_task_api.settings import DEFAULT_DATE_TIME_FORMAT
 
 
 class FileResult(BaseModel):
@@ -26,6 +26,7 @@ class JobResult(BaseModel):
     message: Optional[str] = None
     result: Union[FileResult, Any, str, None] = None
     refresh_job_url: Optional[str] = None
+    cancel_job_url: Optional[str] = None
 
     created_at: Optional[str] = None
     queued_at: Optional[str] = None
