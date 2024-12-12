@@ -31,6 +31,10 @@ def is_param_media_toolkit_file(param: Parameter):
         else:
             return True
 
+    # check for class names also. This is the case if coming from a partial function instead of a real one
+    if hasattr(param.annotation, '__name__'):
+        return param.annotation.__name__ in [t.__name__ for t in type_check_list]
+
     return type(param.annotation) in type_check_list or param.annotation in type_check_list
 
 

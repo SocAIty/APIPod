@@ -128,6 +128,7 @@ class JobQueue(Generic[T]):
         for job in self.job_store.in_progress_jobs:
             if job.is_timed_out:
                 job.status = JOB_STATUS.TIMEOUT
+                job.execution_finished_at = datetime.utcnow()
                 self.job_store.complete_job(job.id)
                 # Cleanup thread
                 if thread := self._job_threads.pop(job.id, None):

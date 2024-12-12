@@ -2,8 +2,12 @@ import inspect
 from typing import Union, List
 
 
-def is_custom_callable_object(func: callable):
-    return hasattr(func, '__call__') and not 'fastapi' in type(func).__module__
+def _is_socaity_ai_route_inference_callable(func: callable):
+    try:
+        return 'routeinferencecallable' in inspect.getmodule(func).__name__.lower().replace("_",'')
+    except:
+        return False
+
 
 def get_func_signature(func: callable):
     """
@@ -11,21 +15,12 @@ def get_func_signature(func: callable):
     Only use if you know what you are doing.
     Excludes fastapi classes because they interfer with fast-task-api.
     """
-    is_callable_object = is_custom_callable_object(func)
-    underlying_func = func.__call__ if is_callable_object else func
-    return inspect.signature(underlying_func)
+    # a package of socaity.ai uses a callable object called RouteInferenceCallable.
+    # For this reason it is treated differently here. Please don't change this without consulting the socaity.ai team.
+    if not _is_socaity_ai_route_inference_callable(func):
+        return inspect.signature(func)
 
-    #is_callable_object = hasattr(func, '__call__') and not 'fastapi' in type(func).__module__
-    ## is_inference_callable = hasattr(func, '__qualname__') and 'RouteInferenceCallable' in func.__qualname__
-    #if is_callable_object and isinstance(func.__call__, functools.partial) and hasattr(func.__call__, 'keywords'):
-    #    sig_params = [
-    #        inspect.Parameter(name, inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=ptype) for name, ptype
-    #        in func.__call__.keywords.items()
-    #    ]
-    #    return inspect.Signature(parameters=sig_params)
-#
-    ## underlying_func = func.__call__ if is_callable_object else func
-    #return inspect.signature(func)
+    return inspect.signature(func.__call__)
 
 
 def replace_func_signature(func: callable, new_sig: Union[inspect.Signature, List[inspect.Parameter]]):
@@ -33,10 +28,11 @@ def replace_func_signature(func: callable, new_sig: Union[inspect.Signature, Lis
         new_sig = sorted(new_sig, key=lambda p: (p.kind, p.default is not inspect.Parameter.empty))
         new_sig = inspect.Signature(parameters=new_sig)
 
-    is_callable_object = is_custom_callable_object(func)
-    if is_callable_object:
-        func.__call__.__signature__ = new_sig
+    # a package of socaity.ai uses a callable object called RouteInferenceCallable.
+    # For this reason it is treated differently here. Please don't change this without consulting the socaity.ai team.
+    if _is_socaity_ai_route_inference_callable(func):
+        setattr(func.__call__, '__signature__', new_sig)
     else:
-        func.__signature__ = new_sig
+        setattr(func, '__signature__', new_sig)
 
     return func
