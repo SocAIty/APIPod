@@ -2,6 +2,8 @@ import inspect
 from typing import Union, List
 
 
+from pydantic import BaseModel
+
 def _is_socaity_ai_route_inference_callable(func: callable):
     try:
         return 'routeinferencecallable' in inspect.getmodule(func).__name__.lower().replace("_",'')

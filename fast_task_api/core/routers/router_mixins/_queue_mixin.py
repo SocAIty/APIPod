@@ -1,6 +1,7 @@
 import functools
 
 from fast_task_api.CONSTS import SERVER_HEALTH
+from fast_task_api.core.job.base_job import BaseJob
 from fast_task_api.core.job_queue import JobQueue
 from fast_task_api.core.job.job_result import JobResultFactory, JobResult
 

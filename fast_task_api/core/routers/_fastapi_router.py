@@ -115,6 +115,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
             p for p in sig.parameters.values()
             if p.name != "job_progress" and "JobProgress" not in p.annotation.__name__
         ])
+
         return replace_func_signature(func, new_sig)
 
 
@@ -191,6 +192,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
         fastapi_route_decorator_func = self.api_route(
             path=path,
             methods=["POST"] if methods is None else methods,
+            response_model=JobResult,
             *args,
             **kwargs
         )
