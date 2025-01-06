@@ -66,7 +66,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
         self.app.openapi = self.custom_openapi
 
     def add_standard_routes(self):
-        #self.api_route(path="/status", methods=["GET", "POST"])(self.get_job)
+        self.api_route(path="/status", methods=["GET", "POST"])(self.get_job)
         self.api_route(path="/health", methods=["GET"])(self.get_health)
         #self.api_route(path="/cancel", methods=["POST"])(self.get_status)
         # ToDo: add favicon
@@ -79,15 +79,16 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
         self.app.openapi_schema["info"]["fast-task-api"] = version
         return self.app.openapi_schema
 
-    def get_job(self, job_id: str, return_format: str = 'json', keep_in_memory: bool = False) -> JobResult:
+    def get_job(self, job_id: str, return_format: str = 'json', keep_alive: bool = False) -> JobResult:
         """
         Get the job with the given job_id.
         :param job_id: The id of the job.
         :param return_format: json or gzipped
-        :param keep_in_memory: If the job should be kept in memory.
+        :param keep_alive: If the job result should be kept in memory/disc.
             If False, the job is removed after the result is returned.
+            If true, the result is stored for a timeframe and can be retrieved multiple times.
         """
-        base_job = self.job_queue.get_job(job_id, keep_in_memory=keep_in_memory)
+        base_job = self.job_queue.get_job(job_id, keep_alive=keep_alive)
         if base_job is None:
             return JobResultFactory.job_not_found(job_id)
 

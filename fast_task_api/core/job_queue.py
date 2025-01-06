@@ -141,10 +141,10 @@ class JobQueue(Generic[T]):
                 self._job_threads[job.id] = thread
                 thread.start()
 
-    def get_job(self, job_id: str, keep_in_memory: bool = False) -> Optional[T]:
+    def get_job(self, job_id: str, keep_alive: bool = False) -> Optional[T]:
         job = self.job_store.get_job(job_id)
         if job and job.status in {JOB_STATUS.FINISHED, JOB_STATUS.FAILED, JOB_STATUS.TIMEOUT}:
-            if not keep_in_memory:
+            if not keep_alive:
                 self.job_store.remove_completed_job(job_id)
         return job
 
