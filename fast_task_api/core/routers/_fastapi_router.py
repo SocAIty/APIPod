@@ -1,11 +1,12 @@
 import functools
 import inspect
+
+from fast_task_api.compatibility.LimitedUploadFile import LimitedUploadFile
 from fast_task_api.core.utils import get_func_signature, replace_func_signature
 from typing import Union
 from fastapi import APIRouter, FastAPI
 
-from fast_task_api.compatibility.upload import (convert_param_type_to_fast_api_upload_file,
-                                                is_param_media_toolkit_file)
+from fast_task_api.compatibility.upload import (is_param_media_toolkit_file, check_if_param_is_in_data_types)
 from fast_task_api.settings import FTAPI_PORT, FTAPI_HOST
 from media_toolkit import media_from_any
 from fast_task_api.CONSTS import SERVER_HEALTH
@@ -24,12 +25,17 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
             summary: str = "Create web-APIs for long-running tasks",
             app: Union[FastAPI, None] = None,
             prefix: str = "/api",
-            *args, **kwargs):
+            max_upload_file_size_mb: float = None,
+            *args,
+            **kwargs):
         """
         :param title: The title of the app. (Like FastAPI(title))
         :param summary: The summary of the app. (Like FastAPI(summary))
         :param app: You can pass an existing fastapi app, if you like to have multiple routers in one app
         :param prefix: The prefix of this app for the paths
+        :param max_upload_file_size_mb:
+            The maximum file size in MB (per file request) that can be uploaded.
+            If None, no limit exists. Value is useful to prevent for example Ram overflow
         :param args: other fastapi app arguments
         :param kwargs: other fastapi app keyword arguments
         """
@@ -49,6 +55,8 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
         self.job_queue = JobQueue()
         self.status = SERVER_HEALTH.INITIALIZING
 
+        self.max_upload_file_size_mb = max_upload_file_size_mb
+
         # Configuring the fastapi app and router
         if app is None:
             app = FastAPI(
@@ -57,7 +65,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
                 contact={
                     "name": "SocAIty",
                     "url": "https://github.com/SocAIty",
-            })
+                })
 
         self.app = app
         self.prefix = prefix
@@ -68,9 +76,9 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
     def add_standard_routes(self):
         self.api_route(path="/status", methods=["GET", "POST"])(self.get_job)
         self.api_route(path="/health", methods=["GET"])(self.get_health)
-        #self.api_route(path="/cancel", methods=["POST"])(self.get_status)
+        # self.api_route(path="/cancel", methods=["POST"])(self.get_status)
         # ToDo: add favicon
-        #self.api_route('/favicon.ico', include_in_schema=False)(self.favicon)
+        # self.api_route('/favicon.ico', include_in_schema=False)(self.favicon)
 
     def custom_openapi(self):
         if not self.app.openapi_schema:
@@ -119,10 +127,9 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
 
         return replace_func_signature(func, new_sig)
 
-
-    def _handle_file_uploads(self, func: callable) -> callable:
+    def _handle_file_uploads(self, func: callable, max_upload_file_size_mb: float = None) -> callable:
         """
-        Modify the function signature for fastapi to handle file uploads.
+        Modify the function signature of an endpoint, such that fastapi can handle file uploads.
         Parse/Read the starlette.MediaFile and give it as read socaity MediaFile to the function while execution.
         """
 
@@ -141,7 +148,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
             # check if we have the file in our list
             my_data_type = upload_params.get(param_name, None)
             if my_data_type is not None:
-                return media_from_any(data, my_data_type)
+                return media_from_any(data, my_data_type, use_temp_file=True)
             # if is not a file, return as is
             return data
 
@@ -156,10 +163,19 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
 
             return func(**n_kwargs)
 
-        # replace signature with fastapi signature
+        # Define a partial version of LimitedUploadFile with max_size set
+        mx = max_upload_file_size_mb if max_upload_file_size_mb is not None else self.max_upload_file_size_mb
+        _limited_upload_file = functools.partial(LimitedUploadFile, max_size=mx)
+
+        # replace MediaToolkit files with LimitedUploadFile (a fastapi compatible UploadFile)
+        # If the parameter is already an LimitedUploadFile, it's not replaced because limit can be individually set
         new_sig = original_func_sig.replace(parameters=[
-            convert_param_type_to_fast_api_upload_file(param)
-            if is_param_media_toolkit_file(param) else param
+            param.replace(annotation=_limited_upload_file)
+            if (
+                    is_param_media_toolkit_file(param)
+                    and not check_if_param_is_in_data_types(param.annotation, [LimitedUploadFile])
+            )
+            else param
             for param in original_func_parameters
         ])
         file_upload_wrapper.__signature__ = new_sig
@@ -171,6 +187,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
     def endpoint(self, path: str, methods: list[str] = None, *args, **kwargs):
         def decorator(func):
             self.api_route(path=path, methods=methods)(func)
+
         return decorator
 
     def task_endpoint(
@@ -178,6 +195,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
             path: str,
             queue_size: int = 100,
             methods: list[str] = None,
+            max_upload_file_size_mb: int = None,
             *args,
             **kwargs
     ):
@@ -211,7 +229,8 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
             # remove job_progress from the function signature to display nice for fastapi
             job_progress_removed = self._remove_job_progress_from_signature(queue_decorated)
             # modify file uploads for compatibility reasons
-            file_upload_modified = self._handle_file_uploads(job_progress_removed)
+            file_upload_modified = self._handle_file_uploads(job_progress_removed,
+                                                             max_upload_file_size_mb=max_upload_file_size_mb)
             # modify file responses so that functions can return multimodal files.
             # file_response_modified = self._handle_file_responses(file_upload_modified)
             # add the route to fastapi
@@ -237,8 +256,8 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
 
         # print helping statement
         print_host = "localhost" if host == "0.0.0.0" or host is None else host
-        print(f"FastTaskAPI {self.app.title} started. Use http://{print_host}:{port}/docs to see the API documentation.")
+        print(
+            f"FastTaskAPI {self.app.title} started. Use http://{print_host}:{port}/docs to see the API documentation.")
         # start uvicorn
         import uvicorn
         uvicorn.run(self.app, host=host, port=port)
-

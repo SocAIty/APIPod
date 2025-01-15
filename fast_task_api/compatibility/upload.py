@@ -13,18 +13,12 @@ def _print_import_warning(class_name: str, lib_names: list):
     print(f"Necessary libraries: {', '.join(lib_names)} are not installed. "
           f"Please install them before using the {class_name} class.")
 
-def is_param_media_toolkit_file(param: Parameter):
-    """
-    Check if a parameter is a file upload.
-    """
-    if param is None:
+
+def check_if_param_is_in_data_types(param: Parameter, type_check_list: list):
+    if param is None or type_check_list is None:
         return False
 
     from fastapi import UploadFile as fastapiUploadFile
-    type_check_list = [
-        MediaFile, ImageFile, AudioFile, VideoFile,
-        StarletteUploadFile, fastapiUploadFile
-    ]
     if not hasattr(param, 'annotation'):
         if not any(isinstance(param, t) for t in type_check_list):
             return False
@@ -38,9 +32,15 @@ def is_param_media_toolkit_file(param: Parameter):
     return type(param.annotation) in type_check_list or param.annotation in type_check_list
 
 
-def convert_param_type_to_fast_api_upload_file(param: Parameter):
+def is_param_media_toolkit_file(param: Parameter):
     """
-    Convert a UploadDataType to a FastAPI MediaFile type.
+    Check if a parameter is a file upload.
     """
     from fastapi import UploadFile as fastapiUploadFile
-    return param.replace(annotation=fastapiUploadFile)
+    type_check_list = [
+        MediaFile, ImageFile, AudioFile, VideoFile,
+        StarletteUploadFile, fastapiUploadFile
+    ]
+    return check_if_param_is_in_data_types(param, type_check_list)
+
+

@@ -177,6 +177,7 @@ def my_upload_image(image: ImageFile, audio: AudioFile, video: VideoFile):
 ```
 You can call the endpoints, either with bytes or b64 encoded strings. 
 
+
 ### Sending requests (and files) to the service with FastSDK
 
 FastSDK also supports MediaFiles and for this reason it natively supports file up/downloads.
@@ -212,6 +213,24 @@ my_files = {
 }
 response = httpx.Client().post(url, files=my_files)
 ```
+
+### Upload file size limits
+
+You can define a default upload size limit in the settings with the environment variable:
+``DEFAULT_MAX_UPLOAD_FILE_SIZE_MB``. If it is None, there is no limit.
+
+Also you can define individual limit for each task_endpoint like.
+```python
+@app.task_endpoint("/my_upload", max_upload_file_size_mb=10)
+```
+Finally you could also define the limit fo a specific file by using
+```python
+@app.task_endpoint("/my_upload")
+def my_upload(file: LimitedUploadFile = LimitedUploadFile(max_size_mb=10)):
+    return file.content
+```
+
+Note: MaxUploadSize currently is only respected for fastapi backend.
 
 
 # Deployment of the service with different backends (hosting providers)
@@ -295,11 +314,10 @@ This doesn't mean that we don't recommend celery. Indeed, it is planned to integ
 
 # Roadmap
 
-- [x] stabilize runpod deployment
 - [x] streaming support
 - [x] add async functionality for fastapi
 - [x] support other job-queuing systems like celery
 
 
-## Note: THE PACKAGE IS STILL IN DEVELOPMENT!
+
 #### LEAVE A STAR TO SUPPORT US. ANY BUG REPORT OR CONTRIBUTION IS HIGHLY APPRECIATED.
