@@ -14,9 +14,8 @@ license = { text = "GPLv3" }
 readme = "README.md"
 dependencies = [
     "uvicorn",
-    "fastapi>=",
-    "runpod>=1.6.0",
-    "media-toolkit>=0.1.1",
+    "fastapi",
+    "media-toolkit>=0.1.2",
     "singleton-decorator==1.0.0"
 ]
 
@@ -29,6 +28,6 @@ full = [
     "uvicorn",
     "fastapi",
     "runpod>=1.6.0",
-    "media-toolkit>=0.1.1",
+    "media-toolkit[full]>=0.1.2",
     "singleton-decorator==1.0.0"
 ]

@@ -180,7 +180,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
         original_func_sig = get_func_signature(func)
         original_func_parameters = original_func_sig.parameters.values()
         new_sig = original_func_sig.replace(parameters=[
-            param.replace(annotation=_limited_upload_file)
+            param.replace(annotation=Union[str, _limited_upload_file])
             if (
                     is_param_media_toolkit_file(param)
                     and not check_if_param_is_in_data_types(param.annotation, [LimitedUploadFile])
