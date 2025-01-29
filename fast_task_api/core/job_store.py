@@ -54,3 +54,7 @@ class JobStore(Generic[T]):
     @property
     def in_progress_jobs(self) -> List[T]:
         return [self._jobs[jid] for jid in self._in_progress]
+
+    @property
+    def completed_jobs(self) -> List[T]:
+        return [self._jobs[jid] for jid in self._completed]

@@ -119,9 +119,11 @@ class SocaityRunpodRouter(_SocaityRouter):
         :param kwargs: arguments for the function behind the path
         :return:
         """
+        if not isinstance(path, str):
+            raise Exception("Path must be a string")
 
-        if len(path) > 0 and path[0] == "/":
-            path = path[1:]
+        path = path.strip("/")
+
         route_function = self.routes.get(path, None)
         if route_function is None:
             raise Exception(f"Route {path} not found")

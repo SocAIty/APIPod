@@ -30,6 +30,7 @@ class BaseJob:
         self.status: JOB_STATUS = JOB_STATUS.QUEUED
         self.job_progress = JobProgress()
         self.result = None
+        self.error = None
 
         # Timing information
         self.created_at = datetime.utcnow()

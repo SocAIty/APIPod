@@ -56,6 +56,7 @@ class JobQueue(Generic[T]):
 
         if not valid:
             job.status = JOB_STATUS.FAILED
+            job.error = message
             job.job_progress.set_status(1.0, message)
             return job
 
@@ -74,11 +75,6 @@ class JobQueue(Generic[T]):
 
     def _inject_job_progress(self, job: T) -> T:
         sig = get_func_signature(job.job_function)
-
-        has_job_progress_param = any(
-            p.name == "job_progress" or "JobProgress" in str(p.annotation)
-            for p in sig.parameters.values()
-        )
 
         job_progress_params = [
             p for p in sig.parameters.values()
@@ -103,6 +99,7 @@ class JobQueue(Generic[T]):
         except Exception as e:
             job.result = None
             job.job_progress.set_status(1.0, str(e))
+            job.error = str(e)
             job.status = JOB_STATUS.FAILED
             # Print the full stack trace to standard error
             print(f"Job {job.id} failed: {str(e)}")
@@ -116,6 +113,7 @@ class JobQueue(Generic[T]):
     def _process_jobs_in_background(self) -> None:
         while not self._shutdown.is_set():
             self._check_job_cancel_criteria()   # Timeouts and other cancel check
+            self._cleanup()  # Remove completed jobs with living threads. Delete data and more.
             self._start_queued_jobs()  # move queued jobs to in_progress
 
             if not (self.job_store.queued_jobs or self.job_store.in_progress_jobs):
@@ -137,9 +135,17 @@ class JobQueue(Generic[T]):
                 job.status = JOB_STATUS.TIMEOUT
                 job.execution_finished_at = datetime.utcnow()
                 self.job_store.complete_job(job.id)
-                # Cleanup thread
-                if thread := self._job_threads.pop(job.id, None):
+
+    def _cleanup(self) -> None:
+        self._remove_completed_jobs_with_living_threads()
+
+    def _remove_completed_jobs_with_living_threads(self) -> None:
+        for job_id in self.job_store.completed_jobs:
+            if thread := self._job_threads.pop(job_id, None):
+                try:
                     thread.join(timeout=0.1)
+                except Exception as e:
+                    print(f"Error joining thread for job {job_id}: {str(e)}")
 
     def _start_queued_jobs(self) -> None:
         for job in self.job_store.queued_jobs:
@@ -162,8 +168,6 @@ class JobQueue(Generic[T]):
         #    job.job_progress.set_status(1.0, "Job cancelled")
         #    todo: sent event to thread, make a cancel request...
         #    self.job_store.complete_job(job_id)
-        #    if thread := self._job_threads.pop(job_id, None):
-        #        thread.join(timeout=0.1)
 
     def shutdown(self) -> None:
         self._shutdown.set()
