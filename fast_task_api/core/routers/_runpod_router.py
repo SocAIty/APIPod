@@ -14,6 +14,7 @@ from fast_task_api.core.job.job_result import JobResult
 from fast_task_api.core.routers._socaity_router import _SocaityRouter
 
 from fast_task_api.CONSTS import FTAPI_DEPLOYMENTS
+from fast_task_api.core.utils import normalize_name
 from fast_task_api.settings import FTAPI_DEPLOYMENT, FTAPI_PORT, DEFAULT_DATE_TIME_FORMAT
 from media_toolkit import media_from_any
 
@@ -43,6 +44,7 @@ class SocaityRunpodRouter(_SocaityRouter):
         - Create a job and add to the job queue
         - Return job
         """
+        path = normalize_name(path, preserve_paths=True)
         if len(path) > 0 and path[0] == "/":
             path = path[1:]
 
@@ -122,6 +124,7 @@ class SocaityRunpodRouter(_SocaityRouter):
         if not isinstance(path, str):
             raise Exception("Path must be a string")
 
+        path = normalize_name(path, preserve_paths=True)
         path = path.strip("/")
 
         route_function = self.routes.get(path, None)

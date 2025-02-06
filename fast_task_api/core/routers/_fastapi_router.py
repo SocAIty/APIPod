@@ -2,7 +2,7 @@ import functools
 import inspect
 
 from fast_task_api.compatibility.LimitedUploadFile import LimitedUploadFile
-from fast_task_api.core.utils import get_func_signature, replace_func_signature
+from fast_task_api.core.utils import get_func_signature, replace_func_signature, normalize_name
 from typing import Union
 from fastapi import APIRouter, FastAPI, HTTPException, Response
 
@@ -243,6 +243,8 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
         - Create a job and add to the job queue
         - Return job
         """
+        path = normalize_name(path, preserve_paths=True)
+
         if len(path) > 0 and path[0] != "/":
             path = "/" + path
 
