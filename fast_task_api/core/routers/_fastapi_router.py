@@ -4,7 +4,7 @@ import inspect
 from fast_task_api.compatibility.LimitedUploadFile import LimitedUploadFile
 from fast_task_api.core.utils import get_func_signature, replace_func_signature
 from typing import Union
-from fastapi import APIRouter, FastAPI, UploadFile, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Response
 
 from fast_task_api.compatibility.upload import (is_param_media_toolkit_file, check_if_param_is_in_data_types)
 from fast_task_api.settings import FTAPI_PORT, FTAPI_HOST
@@ -79,6 +79,10 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin):
         # self.api_route(path="/cancel", methods=["POST"])(self.get_status)
         # ToDo: add favicon
         # self.api_route('/favicon.ico', include_in_schema=False)(self.favicon)
+
+    def get_health(self) -> Response:
+        stat, message = self._health_check.get_health_response()
+        return Response(status_code=stat, content=message)
 
     def custom_openapi(self):
         if not self.app.openapi_schema:

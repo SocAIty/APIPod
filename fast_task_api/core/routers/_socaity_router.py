@@ -2,6 +2,7 @@ from abc import abstractmethod
 from typing import Union
 
 from fast_task_api.CONSTS import SERVER_HEALTH, FTAPI_DEPLOYMENTS
+from fast_task_api.compatibility.HealthCheck import HealthCheck
 from fast_task_api.settings import FTAPI_DEPLOYMENT, FTAPI_PORT
 
 
@@ -19,10 +20,19 @@ class _SocaityRouter:
 
         self.title = title
         self.summary = summary
-        self.status = SERVER_HEALTH.INITIALIZING
+        self._health_check = HealthCheck()
 
-    def get_health(self) -> SERVER_HEALTH:
-        return self.status
+    @property
+    def status(self) -> SERVER_HEALTH:
+        return self._health_check.status
+
+    @status.setter
+    def status(self, value: SERVER_HEALTH):
+        self._health_check.status = value
+
+    def get_health(self) -> Union[dict, str]:
+        stat, message = self._health_check.get_health_response()
+        return message
 
     @abstractmethod
     def get_job(self, job_id: str):
