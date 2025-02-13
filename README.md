@@ -12,10 +12,14 @@ Run services anywhere, be it local, hosted or serverless.</br>
 </p>
 
 <p align="center">
-Call the server and return a job id. Get the result with the job id later.</br>
-FastTaskAPI creates threaded jobs and job queues on the fly.
+  Package machine learning models standardized and production ready.
+  Deploy them to your own infrastructure, runpod or to <a href="https://www.socaity.com">socaity.ai</a>.
 </p>
 
+<p align="center">
+FastTaskAPI creates threaded jobs and job queues on the fly.
+Call the api and return a job id. Get the result with the job id later.</br>
+</p>
 
 ## Table of contents
 
@@ -32,6 +36,7 @@ Get started:
 
 
 ## Why is this useful?
+
 Creating services for long-running tasks is hard.
 - In AI services inference time makes realtime results difficult. Parallel jobs, and a Job queue is often required. For example as a client you would not like to wait for a server response instead do some work until the server produced the result.
 - Serverless deployments like runpod often DO NOT provide routing functionality. This router works in this conditions.
@@ -167,7 +172,7 @@ from fast_task_api import ImageFile, AudioFile, VideoFile
 @app.task_endpoint("/my_file_upload")
 def my_file_upload(image: ImageFile, audio: AudioFile, video: VideoFile):
     image_as_np_array = np.array(image)
-    return [ImageFile().from_file(image_as_np_array) for i in range(10)]
+    return [ImageFile().from_np_array(image_as_np_array) for i in range(10)]
 ```
 You can call the endpoints, either with bytes or b64 encoded strings. 
 
@@ -282,6 +287,15 @@ Therefore you can natively work with them as if they are python functions.
 Read the [fastSDK](https://github.com/SocAIty/fastSDK). documentation to get started.
 
 # Related projects and its differences
+
+## Cog
+
+Cog comes with several cons:
+ - it is mainly focused on packaging. Additional features for ML services are missing.
+ - it does NOT support multiple endpoints and router functionality. 
+ - it is focused on coping with DOCKER and CUDA problems. 
+ - it forces you to learn a new syntax.
+ - It doesn't simplify deployment on RUNPOD
 
 ## Starlette Background Tasks
 
