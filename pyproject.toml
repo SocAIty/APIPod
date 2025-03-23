@@ -16,7 +16,7 @@ dependencies = [
     "uvicorn",
     "fastapi",
     'python-multipart>=0.0.20',
-    "media-toolkit>=0.02.01",
+    "media-toolkit>=0.02.02",
     "singleton-decorator==1.0.0"
 ]
 
@@ -29,6 +29,6 @@ full = [
     "uvicorn",
     "fastapi",
     "runpod>=1.7.7",
-    "media-toolkit[VideoFile]>=00.02.01",
+    "media-toolkit[VideoFile]>=00.02.02",
     "singleton-decorator==1.0.0"
 ]
