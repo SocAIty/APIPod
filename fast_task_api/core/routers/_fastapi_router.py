@@ -117,6 +117,9 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _FileHandling
         Returns:
             JobResult with status and results
         """
+        # sometimes job-id is inserted with leading " or other unwanted symbols. Remove those.
+        job_id = job_id.strip().strip("\"").strip("\'").strip('?').strip("#")
+
         base_job = self.job_queue.get_job(job_id, keep_alive=keep_alive)
         if base_job is None:
             return JobResultFactory.job_not_found(job_id)

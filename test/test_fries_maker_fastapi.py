@@ -38,14 +38,13 @@ def make_video_fries(
         anyfiles: List[MediaFile],
         a_base_model: Optional[MoreParams],
         anint2: int,
-        anyImages: List[ImageFile] = ["Mr. Potato"],
+        anyImages: List[ImageFile] = ["default_value"],
         astring: str = "master_of_desaster",
         anint: int = 42
     ):
-    potato_one_content = anyfile1.content
-    potato_two_content = file2.content
-    mynewVideo = VideoFile().from_any("...")
-    return mynewVideo
+    potato_one_content = anyfile1.to_base64()
+    potato_two_content = img.to_base64()
+    return potato_two_content
 
 
 @app.endpoint("/make_fries", method="POST")
