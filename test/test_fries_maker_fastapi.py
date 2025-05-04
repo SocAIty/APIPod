@@ -20,8 +20,6 @@ app = FastTaskAPI()
 #    time.sleep(2)
 #    return f"Your fries {fries_name} are ready"
 
-
-
 class MoreParams(BaseModel):
     pam1: str = "pam1"
     pam2: int = 42
@@ -36,7 +34,7 @@ def test_mixed_media(
         audio: AudioFile,
         video: VideoFile,
         anyfiles: List[MediaFile],
-        #a_base_model: Optional[MoreParams],
+        a_base_model: Optional[MoreParams],
         anint2: int,
         anyImages: List[ImageFile] = ["default_value"],
         astring: str = "master_of_desaster",

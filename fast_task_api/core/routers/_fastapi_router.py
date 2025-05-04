@@ -27,7 +27,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
             title: str = "FastTaskAPI",
             summary: str = "Create web-APIs for long-running tasks",
             app: Union[FastAPI, None] = None,
-            prefix: str = "/api",
+            prefix: str = "",  # "/api",
             max_upload_file_size_mb: float = None,
             *args,
             **kwargs):
