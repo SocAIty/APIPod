@@ -144,7 +144,26 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
             
         return annotation
 
-    def _convert_params_to_body(self, func: Callable, max_upload_file_size_mb: float = None) -> dict:
+    def _is_fastapi_dependency(self, parameter: inspect.Parameter) -> bool:
+        """
+        Check if the default value is an instance of a FastAPI dependency class or a callable (like Depends())
+        """
+        default = parameter.default
+        if default is inspect.Parameter.empty:
+            return False  # No default, regular required param
+
+        # If it's a basic type, it's regular
+        if isinstance(default, (int, float, str, bool, list, dict, tuple, set, type(None))):
+            return False
+
+        # Check for FastAPI/Starlette param by module name
+        module = getattr(type(default), "__module__", "")
+        if module.startswith("fastapi") or module.startswith("starlette"):
+            return True
+
+        return False
+
+    def _convert_params_to_body(self, func: Callable, max_upload_file_size_mb: float = None) -> List[inspect.Parameter]:
         """
         Moves all parameters to the request body.
         Replaces MediaFile parameters with UploadFile in the function signature.
@@ -155,11 +174,16 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
         sig = inspect.signature(func)
         annotations = self._sig_to_annotations(sig)
 
+        fastapi_dependencies_parameters = []
         field_definitions = {}
-        for name, param in sig.parameters.items():
+        for name, param in sig.parameters.items():     
+            # Skip FastAPI dependency injections like Depends, Security, Body, Request, Response
+            if self._is_fastapi_dependency(param):
+                fastapi_dependencies_parameters.append(param)
+                continue
             annotation = annotations.get(name, Any)
             default = param.default if param.default != inspect.Parameter.empty else ...
-
+            
             # Check if the parameter was originally Optional
             is_optional = get_origin(annotation) in {Union, UnionType} and type(None) in get_args(annotation)
 
@@ -186,7 +210,13 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
                 else:
                     field_definitions[name] = (annotation, default)
 
-        return field_definitions
+        parameters = [
+            inspect.Parameter(name, inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=param_type, default=default)
+            for name, (param_type, default) in field_definitions.items()
+        ]
+        parameters.extend(fastapi_dependencies_parameters)
+        
+        return parameters
 
     def _update_signature(self, func: Callable, max_upload_file_size_mb: float = None) -> Callable:
         """
@@ -199,12 +229,8 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
         Returns:
             Function with updated signature
         """
-        params_model = self._convert_params_to_body(func, max_upload_file_size_mb)
-        parameters = [
-            inspect.Parameter(name, inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=param_type, default=default)
-            for name, (param_type, default) in params_model.items()
-        ]
-        func = replace_func_signature(func, inspect.Signature(parameters=parameters))
+        body_params = self._convert_params_to_body(func, max_upload_file_size_mb)
+        func = replace_func_signature(func, inspect.Signature(parameters=body_params))
         return func
 
     def _prepare_func_for_media_file_upload_with_fastapi(self, func: callable, max_upload_file_size_mb: float = None) -> callable:
