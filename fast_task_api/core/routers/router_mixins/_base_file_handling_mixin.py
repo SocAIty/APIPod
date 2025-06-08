@@ -70,25 +70,28 @@ class _BaseFileHandlingMixin:
 
         # Handle Union/UnionType with multiple types
         org_annotation = get_origin(annotation)
+
+        if org_annotation == MediaDict:
+            raise ValueError("Use MediaList for declaring upload files instead of MediaDict")
+            
         if org_annotation in [Union, UnionType]:
             args = get_args(annotation)
 
-            # Check for MediaDict in Union types
-            if any(arg == MediaDict for arg in args):
-                raise ValueError("Use MediaList for declaring upload files instead of MediaDict")
-
-            # Handle Union with MediaList
-            media_list_types = [t for t in args if t == MediaList]
-            if len(media_list_types) > 1:
-                return MediaList
-            elif len(media_list_types) == 1:
-                return media_list_types[0]  # Deliver the first one with the specified generyc type
+            # resolve recursively
+            resolved_args = [self._get_media_target_type(arg) for arg in args]
+            
+            # if one of the args is a MediaList we need to treat it as a MediaList
+            for arg in resolved_args:
+                if arg == MediaList:
+                    return arg
             
             # Handle Union with MediaFile types
+            # we convert to the first provided MediaType
             media_file_types = [t for t in args if is_param_media_toolkit_file(t)]
             if media_file_types and len(media_file_types) == 1:
                 return media_file_types[0]
 
+            # if no MediaFile types are provided we return MediaFile. Default: should not happen.
             return MediaFile
 
         # Handle MediaList with generic type
@@ -195,7 +198,28 @@ class _BaseFileHandlingMixin:
         """
         annotations = self._sig_to_annotations(sig)
         return {key: annot for key, annot in annotations.items() if self._is_media_param(annot)}
-        
+
+    def _read_upload_files(self, files: dict, media_types: dict, *args, **kwargs) -> dict:
+        """
+        Read upload files from the request and convert them to MediaFile objects.
+        :param files: dictionary of files to process. The keys are the parameter names and the values are the files.
+        :param media_types: to which type the files should be converted. The keys are the parameter names and the values are the types.
+        :return: dictionary of processed files
+        If you want custom file handling, you can override this method.
+        """
+        # also convert those that now include a file upload even if was not specified in the signature
+        converted_files = {}
+        for key, value in files.items():
+            # ignore empty values (default arguments) will not be converted to MediaFile
+            if MediaDict._is_empty_file(value):
+                continue
+
+            try:
+                converted_files[key] = self._convert_param_to_media_file(value, media_types.get(key, MediaFile))
+            except Exception as e:
+                raise ValueError(f"Could not parse file {key}. Check if the file is correct. Error: {str(e)}")
+        return converted_files
+
     def _handle_file_uploads(self, func: Callable) -> Callable:
         """
         Wrap a function to handle file uploads and conversions.
@@ -218,11 +242,13 @@ class _BaseFileHandlingMixin:
             named_args.update(kwargs)
 
             # Convert media-related parameters
-            processed_files = {
-                param_name: self._convert_param_to_media_file(param_value, media_params[param_name])
+            files_to_process = {
+                param_name: param_value
                 for param_name, param_value in named_args.items()
-                if param_name in media_params
+                if param_name in media_params or MediaFile._is_starlette_upload_file(param_value)
             }
+
+            processed_files = self._read_upload_files(files_to_process, media_params, *args, **kwargs)
 
             # Update arguments with converted files
             named_args.update(processed_files)

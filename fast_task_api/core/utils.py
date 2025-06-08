@@ -42,4 +42,8 @@ def normalize_name(name: str, preserve_paths: bool = False) -> Union[str, None]:
     else:
         result = normalize_segment(name)
 
+    # make sure it does not start with a number
+    if result and result[0].isdigit():
+        result = 's-' + result
+
     return result if result else None
