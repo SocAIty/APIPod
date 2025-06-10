@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from typing import Union
-
+import importlib.metadata
 from fast_task_api.CONSTS import SERVER_HEALTH, FTAPI_DEPLOYMENTS
 from fast_task_api.compatibility.HealthCheck import HealthCheck
 from fast_task_api.settings import FTAPI_DEPLOYMENT, FTAPI_PORT
@@ -21,6 +21,7 @@ class _SocaityRouter:
         self.title = title
         self.summary = summary
         self._health_check = HealthCheck()
+        self.version = importlib.metadata.version("fast-task-api")
 
     @property
     def status(self) -> SERVER_HEALTH:
@@ -89,10 +90,3 @@ class _SocaityRouter:
     def post(self, path: str = None, queue_size: int = 1, *args, **kwargs):
         raise NotImplementedError("Implement in subclass. Consider using add_route instead.")
 
-    @staticmethod
-    def _handle_file_uploads(func: callable):
-        """
-        Modify the function signature to handle file uploads.
-        :param func: the route function
-        """
-        raise NotImplementedError("Implement in subclass")

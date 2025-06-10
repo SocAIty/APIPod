@@ -1,73 +1,67 @@
-import time
-import fastapi
-from fastapi import UploadFile as fastapiUploadFile
+from typing import List, Optional
+
+from pydantic import BaseModel
+
+from fast_task_api import JobResult
 from fast_task_api import FastTaskAPI
 from fast_task_api import JobProgress
-from fast_task_api import MediaFile, ImageFile, AudioFile, VideoFile
+from fast_task_api import MediaFile, ImageFile, AudioFile, VideoFile, FileModel
+from fastapi import UploadFile as fastapiUploadFile
 
-#app = SocaityRouter(provider="runpod")
-router = FastTaskAPI(
-    app=fastapi.FastAPI(
-        title="FriesMaker",
-        summary="Make fries from potatoes",
-        version="0.0.1",
-        contact={
-            "name": "SocAIty",
-            "url": "https://github.com/SocAIty",
-        }),
-)
+app = FastTaskAPI()
 
-@router.post(path="/make_fries", queue_size=10)
-def make_fries(job_progress: JobProgress, fries_name: str, amount: int = 1):
-    job_progress.set_status(0.1, f"started new fries creation {fries_name}")
-    time.sleep(1)
-    job_progress.set_status(0.5, f"I am working on it. Lots of work to do {amount}")
-    time.sleep(2)
-    job_progress.set_status(0.8, "Still working on it. Almost done")
-    time.sleep(2)
-    return f"Your fries {fries_name} are ready"
+#@app.post(path="/make_fries", queue_size=10)
+#def make_fries(job_progress: JobProgress, fries_name: str, amount: int = 1):
+#    job_progress.set_status(0.1, f"started new fries creation {fries_name}")
+#    time.sleep(1)
+#    job_progress.set_status(0.5, f"I am working on it. Lots of work to do {amount}")
+#    time.sleep(2)
+#    job_progress.set_status(0.8, "Still working on it. Almost done")
+#    time.sleep(2)
+#    return f"Your fries {fries_name} are ready"
 
+class MoreParams(BaseModel):
+    pam1: str = "pam1"
+    pam2: int = 42
 
-@router.task_endpoint("/make_file_fries")
-def make_fries_from_files(
-        potato_one: MediaFile,
-        potato_two: fastapiUploadFile,
+@app.task_endpoint("/mixed_media")
+def test_mixed_media(
+        job_progress: JobProgress,
+        anyfile1: Optional[MediaFile],
+        anyfile2: FileModel,
+        anyfile3: fastapiUploadFile,
+        img: ImageFile | str | bytes | FileModel,
+        audio: AudioFile,
+        video: VideoFile,
+        anyfiles: List[MediaFile],
+        a_base_model: Optional[MoreParams],
+        anint2: int,
+        anyImages: List[ImageFile] = ["default_value"],
+        astring: str = "master_of_desaster",
+        anint: int = 42
     ):
-    potato_one_content = potato_one.to_bytes()
+    content_one = anyfile1.to_base64()
+    content_two = img.to_base64()
+    return anyfile3, str, content_one, content_two, anyfiles
 
-    return "fries"
+@app.task_endpoint("test_single_file_upload")
+def test_single_file_upload(
+    job_progress: JobProgress,
+    file1: ImageFile
+):
+    return file1.to_base64()
 
-@router.task_endpoint("/make_image_fries")
-def make_image_fries(potato_one: ImageFile):
-    data1 = potato_one.to_cv2_img()
-    print(f"recieved data {data1.shape}")
-    return f"image fries {data1.shape}"
 
-
-@router.task_endpoint("/make_audio_fries")
-def make_audio_fries(
-        potato_one: MediaFile,
-        potato_two: AudioFile,
-    ):
-
-    potato_one_content = potato_one.to_bytes()
-    potato_two_content = potato_two.to_np_array()
-
-    return "audio_fries"
-
-@router.task_endpoint("/make_video_fries")
-def make_video_fries(
-        potato_one: MediaFile,
-        potato_two: VideoFile,
-    ):
-    potato_one_content = potato_one.content
-    potato_two_content = potato_two.content
-    return "video_fries"
-
+@app.endpoint("/make_fries", method="POST")
+def test(
+    mymom: str,
+    file1: fastapiUploadFile
+):
+    return "nok"
 
 if __name__ == "__main__":
     # Runpod version
-    router.start(port=8000, environment="localhost")
+    app.start(port=8000, environment="localhost")
     # app.start(environment="serverless", port=8000)
     # app.start(environment="localhost", port=8000)
 

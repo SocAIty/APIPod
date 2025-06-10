@@ -6,21 +6,19 @@ We will parse the data and always provide it as a binary object to your function
 """
 from inspect import Parameter
 from media_toolkit import MediaFile, AudioFile, ImageFile, VideoFile
-from starlette.datastructures import UploadFile as StarletteUploadFile
-
-
-def _print_import_warning(class_name: str, lib_names: list):
-    print(f"Necessary libraries: {', '.join(lib_names)} are not installed. "
-          f"Please install them before using the {class_name} class.")
+try:
+    from starlette.datastructures import UploadFile as StarletteUploadFile
+except ImportError:
+    StarletteUploadFile = None
 
 
 def check_if_param_is_in_data_types(param: Parameter, type_check_list: list):
     if param is None or type_check_list is None:
         return False
 
-    from fastapi import UploadFile as fastapiUploadFile
+    # check for annotations
     if not hasattr(param, 'annotation'):
-        if not any(isinstance(param, t) for t in type_check_list):
+        if not any(isinstance(param, t) for t in type_check_list) and not any(param == t for t in type_check_list):
             return False
         else:
             return True
@@ -36,11 +34,12 @@ def is_param_media_toolkit_file(param: Parameter):
     """
     Check if a parameter is a file upload.
     """
+    if param is None:
+        return False
+
     from fastapi import UploadFile as fastapiUploadFile
     type_check_list = [
         MediaFile, ImageFile, AudioFile, VideoFile,
         StarletteUploadFile, fastapiUploadFile
     ]
     return check_if_param_is_in_data_types(param, type_check_list)
-
-

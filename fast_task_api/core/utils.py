@@ -3,70 +3,78 @@ from typing import Union, List
 import re
 
 
-def _is_socaity_ai_route_inference_callable(func: callable):
-    try:
-        return 'routeinferencecallable' in inspect.getmodule(func).__name__.lower().replace("_",'')
-    except:
-        return False
-
-
-def get_func_signature(func: callable):
-    """
-    Returns the signature of a function or callable object.
-    Only use if you know what you are doing.
-    Excludes fastapi classes because they interfer with fast-task-api.
-    """
-    # a package of socaity.ai uses a callable object called RouteInferenceCallable.
-    # For this reason it is treated differently here. Please don't change this without consulting the socaity.ai team.
-    if not _is_socaity_ai_route_inference_callable(func):
-        return inspect.signature(func)
-
-    return inspect.signature(func.__call__)
-
-
 def replace_func_signature(func: callable, new_sig: Union[inspect.Signature, List[inspect.Parameter]]):
     if isinstance(new_sig, list):
         new_sig = sorted(new_sig, key=lambda p: (p.kind, p.default is not inspect.Parameter.empty))
         new_sig = inspect.Signature(parameters=new_sig)
 
-    # a package of socaity.ai uses a callable object called RouteInferenceCallable.
-    # For this reason it is treated differently here. Please don't change this without consulting the socaity.ai team.
-    if _is_socaity_ai_route_inference_callable(func):
-        setattr(func.__call__, '__signature__', new_sig)
-    else:
-        setattr(func, '__signature__', new_sig)
-
+    setattr(func, '__signature__', new_sig)
     return func
 
 
-def normalize_name(name: str, preserve_paths: bool = False) -> Union[str, None]:
+# copy of implementation in fastsdk/fastsdk/utils.py
+def normalize_identifier(
+    original: str,
+    replacement_char: str,
+    allowed_non_alphanum: str,
+    trim_chars: str
+) -> str:
     """
-    Normalize a name to be openapi compatible and better searchable.
-    Will remove any special characters. Transforms lowercase. Replaces spaces with hyphens.
-    :param name: The service name to normalize
-    :param preserve_paths: If True, preserves forward slashes (/) for path segments
-    :return: Normalized service name
+    Generalized identifier normalization utility.
+
+    Args:
+        original (str): The original string to normalize.
+        replacement_char (str): Character to replace disallowed characters with (e.g., "-" or "_").
+        allowed_non_alphanum (str): A string of non-alphanumeric characters that should be allowed.
+        trim_chars (str): Characters to strip from the beginning and end of the result.
+
+    Returns:
+        str: A normalized, lowercase identifier with enforced formatting rules.
     """
-    if name is None or not isinstance(name, str):
-        return None
+    # Convert to lowercase
+    normalized = original.lower()
 
-    def normalize_segment(text: str) -> str:
-        """Helper function to normalize a single segment of text"""
-        text = text.lower()
-        text = ' '.join(text.split())  # Replace multiple spaces with single space
-        text = text.replace(' ', '-').replace("_", '-')   # Replace spaces and _ with hyphens
-        text = re.sub(r'[^a-z0-9-]', '', text)  # Keep only alphanumeric and hyphens
-        text = re.sub(r'-+', '-', text)  # Replace multiple hyphens with single hyphen
-        return text.strip('-')  # Remove leading/trailing hyphens
+    # Replace backslashes with slashes
+    normalized = normalized.replace("\\", "/")
 
-    if preserve_paths:
-        # Normalize each non-empty path segment
-        result = '/'.join(
-            segment for segment in
-            (normalize_segment(s) for s in name.split('/'))
-            if segment
-        )
-    else:
-        result = normalize_segment(name)
+    # Replace all characters that are not a-z, 0-9, or explicitly allowed
+    allowed = f"a-z0-9{re.escape(allowed_non_alphanum)}"
+    normalized = re.sub(f"[^{allowed}]+", replacement_char, normalized)
 
-    return result if result else None
+    # Collapse multiple instances of allowed non-alphanum characters (like '//' or '__')
+    for ch in set(allowed_non_alphanum + replacement_char):
+        normalized = re.sub(f"{re.escape(ch)}+", ch, normalized)
+
+    # Trim unwanted leading/trailing characters
+    normalized = normalized.strip(trim_chars + replacement_char)
+
+    # Ensure the identifier does not start with a digit
+    if normalized and normalized[0].isdigit():
+        normalized = replacement_char + normalized
+
+    return normalized
+
+
+def normalize_name(name: str, preserve_paths: bool = False) -> str:
+    """
+    Normalizes a string to be used as a Python module, method or class name by:
+    - Replacing all special characters with underscores
+    - Lowercasing the result
+    - Preventing double underscores and invalid leading/trailing characters
+    - Avoiding names that start with a digit
+
+    Args:
+        name (str): The input string to normalize.
+
+    Returns:
+        str: A Python module-safe, normalized string.
+    """
+    name = normalize_identifier(
+        original=name,
+        replacement_char='-',
+        allowed_non_alphanum='/' if preserve_paths else '',
+        trim_chars='-'
+    )
+    if len(name) == 0:
+        return "no_name"
+    return name

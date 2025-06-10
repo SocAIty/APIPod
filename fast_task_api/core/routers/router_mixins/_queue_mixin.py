@@ -3,6 +3,7 @@ import functools
 from fast_task_api.CONSTS import SERVER_HEALTH
 from fast_task_api.core.routers.router_mixins.job_queue import JobQueue
 from fast_task_api.core.job.job_result import JobResultFactory, JobResult
+from fast_task_api.settings import SERVER_DOMAIN
 
 
 class _QueueMixin:
@@ -43,7 +44,7 @@ class _QueueMixin:
                     job_params=wrapped_func_kwargs
                 )
                 ret_job = JobResultFactory.from_base_job(base_job)
-                ret_job.refresh_job_url = f"/status?job_id={ret_job.id}"
+                ret_job.refresh_job_url = f"{SERVER_DOMAIN}/status?job_id={ret_job.id}"
                 return ret_job
 
             return job_creation_func_wrapper

@@ -1,5 +1,6 @@
 from fastapi import UploadFile, HTTPException, status
 
+
 class LimitedUploadFile(UploadFile):
     """
     An UploadFile subclass that enforces a size limit on uploads.

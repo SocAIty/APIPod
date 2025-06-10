@@ -1,0 +1,20 @@
+{
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/../media-toolkit"
+    ],
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.indexing": true,
+    "python.analysis.packageIndexDepths": [
+        {
+            "name": "media_toolkit",
+            "depth": 5
+        }
+    ],
+    "python.analysis.diagnosticMode": "workspace",
+    "python.analysis.autoSearchPaths": true,
+    "flake8.args": [
+        "--max-line-length=120",
+        "--ignore=E203,W503,E501"
+    ]
+} 

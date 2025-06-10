@@ -6,7 +6,7 @@ from typing import Generic, Dict, Optional, TypeVar
 
 from fast_task_api.core.job_store import JobStore
 from fast_task_api.core.job.base_job import BaseJob, JOB_STATUS
-from fast_task_api.core.utils import get_func_signature
+import inspect
 
 T = TypeVar('T', bound=BaseJob)
 
@@ -112,14 +112,14 @@ class JobQueue(Generic[T]):
 
     def cancel_job(self, job_id: str) -> None:
         raise NotImplementedError("Job cancellation is not implemented yet.")
-        #if job := self.get_job(job_id):
+        # if job := self.get_job(job_id):
         #    job.status = JOB_STATUS.FAILED
         #    job.job_progress.set_status(1.0, "Job cancelled")
         #    todo: sent event to thread, make a cancel request...
         #    self._complete_job(job_id)
 
     def _inject_job_progress(self, job: T) -> T:
-        sig = get_func_signature(job.job_function)
+        sig = inspect.signature(job.job_function)
 
         job_progress_params = [
             p for p in sig.parameters.values()
