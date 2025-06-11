@@ -6,6 +6,7 @@ from typing import Any, Union, get_args, get_origin, Callable, List, Type
 from media_toolkit import media_from_any, MediaFile, MediaList, MediaDict
 from fast_task_api.compatibility.upload import is_param_media_toolkit_file
 from fast_task_api.core.job.job_result import FileModel
+from fast_task_api.core.routers._exceptions import FileUploadException
 
 
 class _BaseFileHandlingMixin:
@@ -248,7 +249,10 @@ class _BaseFileHandlingMixin:
                 if param_name in media_params or MediaFile._is_starlette_upload_file(param_value)
             }
 
-            processed_files = self._read_upload_files(files_to_process, media_params, *args, **kwargs)
+            try:
+                processed_files = self._read_upload_files(files_to_process, media_params, *args, **kwargs)
+            except Exception as e:
+                raise FileUploadException(message=str(e))
 
             # Update arguments with converted files
             named_args.update(processed_files)
