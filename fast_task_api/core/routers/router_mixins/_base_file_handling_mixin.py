@@ -87,13 +87,13 @@ class _BaseFileHandlingMixin:
                     return arg
 
             # Handle Union with MediaFile types
-            # we convert to the first provided MediaType
             media_file_types = [t for t in args if is_param_media_toolkit_file(t)]
             if media_file_types and len(media_file_types) == 1:
                 return media_file_types[0]
 
-            # if no MediaFile types are provided we return MediaFile. Default: should not happen.
-            return MediaFile
+            # Return the first MediaFile type that's a specific FileType.
+            media_file_types.sort(key=lambda x: x == MediaFile)
+            return media_file_types[0]
 
         # Handle MediaList with generic type
         if org_annotation == MediaList:
@@ -160,13 +160,14 @@ class _BaseFileHandlingMixin:
             target_type = self._get_media_target_type(annotation)
 
             # Attempt conversion
-            return media_from_any(
+            m = media_from_any(
                 data=param_value,
                 type_hint=target_type,
                 use_temp_file=True,
                 temp_dir=None,
                 allow_reads_from_disk=False
             )
+            return m
         except Exception as e:
             # If strict conversion fails and it's a Union type, return original
             if get_origin(annotation) in [Union, UnionType]:
