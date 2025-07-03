@@ -20,6 +20,11 @@ dependencies = [
     "singleton-decorator==1.0.0"
 ]
 
+[project.optional-dependencies]
+runpod = [
+    "runpod">=1.7.7
+]
+
 [project.urls]
 Repository = "https://github.com/SocAIty/fast-task-api"
 Homepage = "https://www.socaity.ai"

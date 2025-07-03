@@ -36,7 +36,7 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
     def _get_file_model_annotation(self, arg: type, is_list: bool, max_upload_file_size_mb: float) -> Dict[str, Any]:
         """
         Extracts FileModel-like annotations from a type annotation.
-        
+
         Args:
             annotation: Type annotation to extract FileModel from
         """
@@ -58,11 +58,11 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
         """
         Converts MediaFile-like annotations into appropriate UploadFile types for FastAPI.
         Preserves original type information as metadata for OpenAPI schema.
-        
+
         Args:
             annotation: Type annotation to convert
             max_upload_file_size_mb: Maximum file size in MB
-            
+
         Returns:
             Tuple containing:
             - Converted type annotation suitable for FastAPI
@@ -106,12 +106,12 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
             # Check for nested MediaList
             if any(t in (MediaList, MediaDict) for t in generic_type):
                 raise ValueError("Nesting of MediaList/MediaDict is not supported")
-            
+    
             if len(generic_type) == 1 and self._is_media_param(generic_type[0]):
                 return self._get_file_model_annotation(generic_type[0], is_list=True, max_upload_file_size_mb=max_upload_file_size_mb)
-            
+
             return self._get_file_model_annotation(MediaFile, is_list=True, max_upload_file_size_mb=max_upload_file_size_mb)
-            
+
         # Handle List types
         if org_annotation in [List, list]:
             args = get_args(annotation)
@@ -124,7 +124,7 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
             media_params = [t for t in args if self._is_media_param(t)]
             if len(media_params) == 0:
                 return annotation
-            
+
             if any(get_origin(t) in [List, list, MediaList] for t in args):
                 raise ValueError("Nesting of MediaList and List is not supported")
 
@@ -132,20 +132,20 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
             #  First other types to give FastAPI the correct order (Users can enter values instead of uploading files)
             if not self._is_media_param(args[0]):
                 return Union[(*non_media_params, list_file_up_annot)]
-            
+
             if len(media_params) == 1:
                 return Union[(self._get_file_model_annotation(media_params[0], is_list=True, max_upload_file_size_mb=max_upload_file_size_mb), *non_media_params)]
-            
+
             return Union[(list_file_up_annot, *non_media_params)]
-                
+
         # Handle direct MediaFile types
         if is_param_media_toolkit_file(annotation):
             return self._get_file_model_annotation(annotation, is_list=False, max_upload_file_size_mb=max_upload_file_size_mb)
-        
+
         # Handle FileModel
         if inspect.isclass(annotation) and issubclass(annotation, FileModel):
             return annotation
-            
+
         return annotation
 
     def _is_fastapi_dependency(self, parameter: inspect.Parameter) -> bool:

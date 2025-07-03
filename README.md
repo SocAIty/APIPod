@@ -69,10 +69,10 @@ The code is fast, lightweight, flexible and pure python.
 You can install the package with PIP, or clone the repository.
 
 ```python
-# install from pypi
+# install from pypi.
 pip install fast-task-api
-# install from github for the newest version
-pip install git+git://github.com/SocAIty/FastTaskAPI
+# for being able to use runpod backend.
+pip install fast-task-api[runpod] 
 ```
 
 # How to use
