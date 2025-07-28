@@ -6,6 +6,7 @@ from typing import Any, Union, get_args, get_origin, Callable, List, Type
 from media_toolkit import media_from_any, MediaFile, MediaList, MediaDict
 from fast_task_api.compatibility.upload import is_param_media_toolkit_file
 from fast_task_api.core.job.job_result import FileModel
+from fast_task_api.core.routers._exceptions import FileUploadException
 
 
 class _BaseFileHandlingMixin:
@@ -40,10 +41,10 @@ class _BaseFileHandlingMixin:
         """
         if annotation == MediaList:
             return True
-        
+
         if inspect.isclass(annotation) and issubclass(annotation, FileModel):
             return True
-            
+
         # Check for Union/UnionType with media file types included
         if get_origin(annotation) in [Union, UnionType, List, list]:
             return any(self._is_media_param(arg) for arg in get_args(annotation))
@@ -73,26 +74,26 @@ class _BaseFileHandlingMixin:
 
         if org_annotation == MediaDict:
             raise ValueError("Use MediaList for declaring upload files instead of MediaDict")
-            
+
         if org_annotation in [Union, UnionType]:
             args = get_args(annotation)
 
             # resolve recursively
             resolved_args = [self._get_media_target_type(arg) for arg in args]
-            
+
             # if one of the args is a MediaList we need to treat it as a MediaList
             for arg in resolved_args:
                 if arg == MediaList:
                     return arg
-            
+
             # Handle Union with MediaFile types
-            # we convert to the first provided MediaType
             media_file_types = [t for t in args if is_param_media_toolkit_file(t)]
             if media_file_types and len(media_file_types) == 1:
                 return media_file_types[0]
 
-            # if no MediaFile types are provided we return MediaFile. Default: should not happen.
-            return MediaFile
+            # Return the first MediaFile type that's a specific FileType.
+            media_file_types.sort(key=lambda x: x == MediaFile)
+            return media_file_types[0]
 
         # Handle MediaList with generic type
         if org_annotation == MediaList:
@@ -110,7 +111,7 @@ class _BaseFileHandlingMixin:
                 return MediaList
             elif len(media_list_types) == 1:
                 return media_list_types[0]  # Deliver the first one with the specified generyc type
-            
+
             return MediaList
 
         # Handle List types
@@ -159,13 +160,14 @@ class _BaseFileHandlingMixin:
             target_type = self._get_media_target_type(annotation)
 
             # Attempt conversion
-            return media_from_any(
-                file=param_value,
-                media_file_type=target_type,
+            m = media_from_any(
+                data=param_value,
+                type_hint=target_type,
                 use_temp_file=True,
                 temp_dir=None,
                 allow_reads_from_disk=False
             )
+            return m
         except Exception as e:
             # If strict conversion fails and it's a Union type, return original
             if get_origin(annotation) in [Union, UnionType]:
@@ -248,10 +250,15 @@ class _BaseFileHandlingMixin:
                 if param_name in media_params or MediaFile._is_starlette_upload_file(param_value)
             }
 
-            processed_files = self._read_upload_files(files_to_process, media_params, *args, **kwargs)
+            try:
+                processed_files = self._read_upload_files(files_to_process, media_params, *args, **kwargs)
+            except Exception as e:
+                raise FileUploadException(message=str(e))
 
             # Update arguments with converted files
             named_args.update(processed_files)
             return func(**named_args)
 
         return file_upload_wrapper
+
+   

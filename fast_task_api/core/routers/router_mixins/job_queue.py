@@ -2,7 +2,7 @@ import threading
 import traceback
 from datetime import datetime
 import time
-from typing import Generic, Dict, Optional, TypeVar
+from typing import Generic, Dict, Optional, TypeVar, Tuple
 
 from fast_task_api.core.job_store import JobStore
 from fast_task_api.core.job.base_job import BaseJob, JOB_STATUS
@@ -38,7 +38,7 @@ class JobQueue(Generic[T]):
     def set_queue_size(self, job_function: callable, queue_size: int = 500) -> None:
         self.queue_sizes[job_function.__name__] = queue_size
 
-    def _validate_queue_size(self, job: BaseJob) -> (bool, str):
+    def _validate_queue_size(self, job: BaseJob) -> Tuple[bool, str]:
         queue_size = self.queue_sizes.get(job.job_function.__name__, 100)
         queued_count = sum(1 for qjob in self.job_store.queued_jobs
                            if qjob.job_function == job.job_function)
@@ -48,10 +48,10 @@ class JobQueue(Generic[T]):
             return False, f"Queue size limit reached for {job.job_function.__name__}"
         return True, None
 
-    def _validate_job_before_add(self, job: BaseJob) -> (bool, str):
+    def _validate_job_before_add(self, job: BaseJob) -> Tuple[bool, str]:
         valid, message = self._validate_queue_size(job)
         if not valid:
-            return True, message
+            return False, message
 
         return True, None
 
@@ -64,6 +64,9 @@ class JobQueue(Generic[T]):
             job.status = JOB_STATUS.FAILED
             job.error = message
             job.job_progress.set_status(1.0, message)
+            # if not added to completed job, some clients fail with job not found on polling.
+            self.job_store._add_job(job)
+            self._complete_job(job=job, final_state=JOB_STATUS.FAILED) 
             return job
 
         job.status = JOB_STATUS.QUEUED

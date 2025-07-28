@@ -320,9 +320,7 @@ This doesn't mean that we don't recommend celery. Indeed, it is planned to integ
 # Roadmap
 
 - [x] streaming support
-- [x] add async functionality for fastapi
 - [x] support other job-queuing systems like celery
-
 
 
 #### LEAVE A STAR TO SUPPORT US. ANY BUG REPORT OR CONTRIBUTION IS HIGHLY APPRECIATED.

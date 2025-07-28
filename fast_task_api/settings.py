@@ -20,4 +20,3 @@ DEFAULT_DATE_TIME_FORMAT = environ.get("FTAPI_DATETIME_FORMAT", '%Y-%m-%dT%H:%M:
 if FTAPI_BACKEND == FTAPI_BACKENDS.RUNPOD and FTAPI_DEPLOYMENT == FTAPI_DEPLOYMENTS.LOCALHOST:
     sys.argv.extend(['rp_serve_api', '1'])
     sys.argv.extend(['--rp_serve_api', '1'])
-

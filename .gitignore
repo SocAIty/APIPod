@@ -160,5 +160,5 @@ cython_debug/
 .idea/
 .idea
 
+# Ignore Visual Studio Code files
 .vscode/
-.vscode

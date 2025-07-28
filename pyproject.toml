@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fast-task-api"
-version = "1.1.1"
+version = "1.1.9"
 description="Create web-APIs for long-running tasks"
 requires-python = ">=3.8"
 authors = [
@@ -16,19 +16,15 @@ dependencies = [
     "uvicorn",
     "fastapi",
     'python-multipart>=0.0.20',
-    "media-toolkit>=0.02.03",
+    "media-toolkit[VideoFile]>=0.02.08",
     "singleton-decorator==1.0.0"
+]
+
+[project.optional-dependencies]
+runpod = [
+    "runpod">=1.7.7
 ]
 
 [project.urls]
 Repository = "https://github.com/SocAIty/fast-task-api"
 Homepage = "https://www.socaity.ai"
-
-[project.optional-dependencies]
-full = [
-    "uvicorn",
-    "fastapi",
-    "runpod>=1.7.7",
-    "media-toolkit[VideoFile]>=00.02.03",
-    "singleton-decorator==1.0.0"
-]

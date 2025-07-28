@@ -175,3 +175,4 @@ class JobResultFactory:
             status=JOB_STATUS.FAILED,
             error="Job not found."
         )
+

@@ -3,7 +3,7 @@ import inspect
 import json
 import traceback
 from datetime import datetime
-from typing import Union
+from typing import Union, Callable
 
 from fast_task_api.CONSTS import SERVER_HEALTH
 from fast_task_api.compatibility.upload import is_param_media_toolkit_file
@@ -23,10 +23,14 @@ class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin):
     Adds routing functionality for the runpod serverless framework.
     Provides enhanced file handling and conversion capabilities.
     """
-
     def __init__(self, title: str = "FastTaskAPI for ", summary: str = None, *args, **kwargs):
         super().__init__(title=title, summary=summary, *args, **kwargs)
         self.routes = {}  # routes are organized like {"ROUTE_NAME": "ROUTE_FUNCTION"}
+
+        self.add_standard_routes()
+
+    def add_standard_routes(self):
+        self.task_endpoint(path="openapi.json")(self.get_openapi_schema)
 
     def task_endpoint(
             self,
@@ -197,13 +201,98 @@ class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin):
             def custom_openapi(self):
                 if not self.rp_app.openapi_schema:
                     self._orig_openapi_func()
-                self.rp_app.openapi_schema["info"]["fast-task-api"] = self.version
+                self.rp_app.openapi_schema["info"]["fast-task-api"] = "1.1.3"
                 self.rp_app.openapi_schema["info"]["runpod"] = rp_fastapi.runpod_version
                 return self.rp_app.openapi_schema
 
         rp_fastapi.WorkerAPI = WorkerAPIWithModifiedInfo
 
         runpod.serverless.start({"handler": self.handler})
+
+    def _create_openapi_compatible_function(self, func: Callable) -> Callable:
+        """
+        Create a function compatible with FastAPI OpenAPI generation by applying 
+        the same conversion logic as the FastAPI mixin, but without runtime dependencies.
+        
+        This generates the rich schema with proper file upload handling.
+        
+        Args:
+            func: Original function to convert
+            max_upload_file_size_mb: Maximum file size in MB
+            
+        Returns:
+            Function with FastAPI-compatible signature for OpenAPI generation
+        """
+        # Import FastAPI-specific conversion logic
+        from fast_task_api.core.routers.router_mixins._fast_api_file_handling_mixin import _fast_api_file_handling_mixin
+        from fast_task_api.core.job.job_result import JobResult
+        import inspect
+        from fast_task_api.core.utils import replace_func_signature
+        # Create a temporary instance of the FastAPI mixin to use its conversion methods
+        temp_mixin = _fast_api_file_handling_mixin(max_upload_file_size_mb=5)
+        # Apply the same preparation logic as FastAPI router
+        with_file_upload_signature = temp_mixin._prepare_func_for_media_file_upload_with_fastapi(func, 5)
+        # 4. Set proper return type for job-based endpoints
+
+        sig = inspect.signature(with_file_upload_signature)
+        job_result_sig = sig.replace(return_annotation=JobResult)
+        # Update the signature
+
+        final_func = replace_func_signature(with_file_upload_signature, job_result_sig)
+        return final_func
+
+    def get_openapi_schema(self):
+        from fastapi.openapi.utils import get_openapi
+        from fastapi.routing import APIRoute
+
+        fastapi_routes = []
+        for path, func in self.routes.items():
+            # Create FastAPI-compatible function for rich OpenAPI generation
+            try:
+                compatible_func = self._create_openapi_compatible_function(func)
+                fastapi_routes.append(APIRoute(
+                    path=f"/{path.strip('/')}", 
+                    endpoint=compatible_func, 
+                    methods=["POST"]
+                ))
+            except Exception as e:
+                print(f"Error creating OpenAPI compatible function for {path}: {e}")
+                # Fallback to safe function approach
+                try:
+                    safe_func = self._create_openapi_safe_function(func)
+                    fastapi_routes.append(APIRoute(
+                        path=f"/{path.strip('/')}", 
+                        endpoint=safe_func, 
+                        methods=["POST"],
+                        response_model=None
+                    ))
+                except Exception as e2:
+                    print(f"Error creating safe function for {path}: {e2}")
+                    # Ultimate fallback - create minimal route
+
+                    def minimal_func():
+                        return {"message": "Documentation not available"}
+
+                    fastapi_routes.append(APIRoute(
+                        path=f"/{path.strip('/')}",
+                        endpoint=minimal_func,
+                        methods=["POST"],
+                        response_model=None
+                    ))
+
+        # Generate the OpenAPI schema dict (similar to FastAPI openapi())
+        schema = get_openapi(
+            title=self.title,
+            version="1.0.0",
+            routes=fastapi_routes,
+            summary=self.summary,
+            description=self.summary,
+        )
+
+        # Add FastTaskAPI version information like the FastAPI router
+        schema["info"]["fast-task-api"] = self.version
+
+        return schema
 
     def start(self, deployment: Union[FTAPI_DEPLOYMENTS, str] = FTAPI_DEPLOYMENT, port: int = FTAPI_PORT, *args, **kwargs):
         if type(deployment) is str:
@@ -216,4 +305,3 @@ class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin):
             runpod.serverless.start({"handler": self.handler})
         else:
             raise Exception(f"Not implemented for environment {deployment}")
-

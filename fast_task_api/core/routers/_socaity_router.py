@@ -89,4 +89,3 @@ class _SocaityRouter:
 
     def post(self, path: str = None, queue_size: int = 1, *args, **kwargs):
         raise NotImplementedError("Implement in subclass. Consider using add_route instead.")
-

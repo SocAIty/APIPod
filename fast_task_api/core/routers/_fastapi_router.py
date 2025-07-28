@@ -12,9 +12,10 @@ from fast_task_api.core.routers.router_mixins._queue_mixin import _QueueMixin
 from fast_task_api.core.routers.router_mixins._fast_api_file_handling_mixin import _fast_api_file_handling_mixin
 from fast_task_api.core.utils import normalize_name
 from fast_task_api.core.routers.router_mixins.job_queue import JobQueue
+from fast_task_api.core.routers.router_mixins._fast_api_exception_handling import FastAPIExceptionHandler
 
 
-class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_file_handling_mixin):
+class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_file_handling_mixin, FastAPIExceptionHandler):
     """
     FastAPI router extension that adds support for task endpoints.
 
@@ -65,6 +66,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
             )
 
         self.app = app
+        self.app.add_exception_handler(Exception, self.global_exception_handler)
         self.prefix = prefix
         self.add_standard_routes()
 
@@ -190,7 +192,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
 
             # Add route to FastAPI
             return fastapi_route_decorator(upload_enabled)
-           
+
         return decorator
 
     def get(self, path: str = None, queue_size: int = 100, *args, **kwargs):
