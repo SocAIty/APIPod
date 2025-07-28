@@ -30,7 +30,7 @@ class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin):
         self.add_standard_routes()
 
     def add_standard_routes(self):
-        self.task_endpoint(path="openapi")(self.get_openapi_schema)
+        self.task_endpoint(path="openapi.json")(self.get_openapi_schema)
 
     def task_endpoint(
             self,
