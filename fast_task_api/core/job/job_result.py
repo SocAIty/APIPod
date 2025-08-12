@@ -77,7 +77,7 @@ class JobResult(BaseModel):
     status: Optional[str] = None
     progress: Optional[JobProgress] = None
     error: Optional[str] = None
-    result: Union[FileModel, List[FileModel], List, str, None] = None
+    result: Union[FileModel, List[FileModel], List, str, Any, None] = None
     refresh_job_url: Optional[str] = None
     cancel_job_url: Optional[str] = None
 
