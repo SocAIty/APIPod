@@ -8,8 +8,9 @@ class JobProgress:
         self._progress = progress
         self._message = message
 
-    def set_status(self, progress: float, message: str = None):
-        self._progress = progress
+    def set_status(self, progress: float = None, message: str = None):
+        if progress is not None:
+            self._progress = progress
         if message is not None:
             self._message = message
 
@@ -19,7 +20,7 @@ class JobProgressRunpod(JobProgress):
         super().__init__(progress=progress, message=message)
         self.runpod_job = runpod_job
 
-    def set_status(self, progress: float, message: str = None):
+    def set_status(self, progress: float = None, message: str = None):
         super().set_status(progress=progress, message=message)
 
         try:
