@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fast-task-api"
-version = "1.2.2"
+version = "1.2.4"
 description="Create web-APIs for long-running tasks"
 requires-python = ">=3.8"
 authors = [
@@ -16,8 +16,7 @@ dependencies = [
     "uvicorn",
     "fastapi",
     'python-multipart>=0.0.20',
-    "media-toolkit[VideoFile]>=0.02.08",
-    "singleton-decorator==1.0.0"
+    "media-toolkit[VideoFile]>=0.02.14",
 ]
 
 [project.optional-dependencies]
