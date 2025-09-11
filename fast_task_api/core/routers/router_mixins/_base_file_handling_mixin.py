@@ -159,6 +159,14 @@ class _BaseFileHandlingMixin:
             # Determine target type for conversion
             target_type = self._get_media_target_type(annotation)
 
+            if target_type == MediaList:
+                return MediaList(
+                    read_system_files=False,
+                    download_files=True,
+                    use_temp_file=True,
+                    temp_dir=None
+                ).from_any(param_value)
+
             # Attempt conversion
             m = media_from_any(
                 data=param_value,

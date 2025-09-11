@@ -16,7 +16,7 @@ dependencies = [
     "uvicorn",
     "fastapi",
     'python-multipart>=0.0.20',
-    "media-toolkit[VideoFile]>=0.02.14",
+    "media-toolkit[VideoFile]>=0.02.15",
 ]
 
 [project.optional-dependencies]

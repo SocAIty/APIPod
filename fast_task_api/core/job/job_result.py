@@ -17,7 +17,7 @@ class FileModel(BaseModel):
     max_size_mb: Optional[float] = 4000
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "x-media-type": "MediaFile",
             "example": {
                 "file_name": "example.csv",
@@ -29,7 +29,7 @@ class FileModel(BaseModel):
 
 class ImageFileModel(FileModel):
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "x-media-type": "ImageFile",
             "example": {
                 "file_name": "example.png",
@@ -41,7 +41,7 @@ class ImageFileModel(FileModel):
 
 class AudioFileModel(FileModel):
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "x-media-type": "AudioFile",
             "example": {
                 "file_name": "example.mp3",
@@ -53,7 +53,7 @@ class AudioFileModel(FileModel):
 
 class VideoFileModel(FileModel):
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "x-media-type": "VideoFile",
             "example": {
                 "file_name": "example.mp4",

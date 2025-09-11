@@ -50,9 +50,9 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
         file_model_annot = file_model_map.get(arg, FileModel)
 
         if is_list:
-            return Union[List[_limited_upload_file], List[file_model_annot]]
+            return Union[List[_limited_upload_file], List[file_model_annot], List[str]]
         else:
-            return Union[_limited_upload_file, file_model_annot]
+            return Union[_limited_upload_file, file_model_annot, str]
 
     def _get_media_file_annotation(self, annotation: Any, max_upload_file_size_mb: float):
         """
@@ -106,7 +106,7 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
             # Check for nested MediaList
             if any(t in (MediaList, MediaDict) for t in generic_type):
                 raise ValueError("Nesting of MediaList/MediaDict is not supported")
-    
+
             if len(generic_type) == 1 and self._is_media_param(generic_type[0]):
                 return self._get_file_model_annotation(generic_type[0], is_list=True, max_upload_file_size_mb=max_upload_file_size_mb)
 
