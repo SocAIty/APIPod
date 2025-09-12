@@ -7,7 +7,7 @@ from pydantic import BaseModel, AnyUrl
 from fast_task_api.compatibility.upload import is_param_media_toolkit_file
 from fast_task_api.core.job.base_job import JOB_STATUS, BaseJob
 from fast_task_api.settings import DEFAULT_DATE_TIME_FORMAT
-from media_toolkit import MediaList
+from media_toolkit import IMediaContainer
 
 
 class FileModel(BaseModel):
@@ -93,31 +93,16 @@ class JobResultFactory:
 
     @staticmethod
     def _serialize_result(data: Any) -> Union[FileModel, List[FileModel], List, str, None]:
-        def convert_media_list(media_list: MediaList) -> List:
-            """Convert a MediaList to a list of FileModels or original items"""
-            json_list = media_list.to_json()
-            return [
-                FileModel(**item) if isinstance(item, dict) else item
-                for item in json_list
-            ]
-
         # Handle single MediaList or MediaFile
+        if isinstance(data, IMediaContainer):
+            return data.to_json()
+
         if is_param_media_toolkit_file(data):
-            if isinstance(data, MediaList):
-                return convert_media_list(data)
             return FileModel(**data.to_json())
 
         # Handle list of MediaLists/MediaFiles/other items
         if isinstance(data, list):
-            result = []
-            for item in data:
-                if isinstance(item, MediaList):
-                    result.append(convert_media_list(item))
-                elif is_param_media_toolkit_file(item):
-                    result.append(FileModel(**item.to_json()))
-                else:
-                    result.append(item)
-            return result
+            return [JobResultFactory._serialize_result(item) for item in data]
 
         return data
 
@@ -175,4 +160,3 @@ class JobResultFactory:
             status=JOB_STATUS.FAILED,
             error="Job not found."
         )
-

@@ -1,15 +1,13 @@
 import functools
 import inspect
-import json
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Union, Callable
 
 from fast_task_api.CONSTS import SERVER_HEALTH
-from fast_task_api.compatibility.upload import is_param_media_toolkit_file
 from fast_task_api.core.job.base_job import JOB_STATUS
 from fast_task_api.core.job.job_progress import JobProgressRunpod, JobProgress
-from fast_task_api.core.job.job_result import JobResult
+from fast_task_api.core.job.job_result import JobResultFactory, JobResult
 from fast_task_api.core.routers._socaity_router import _SocaityRouter
 from fast_task_api.core.routers.router_mixins._base_file_handling_mixin import _BaseFileHandlingMixin
 
@@ -129,16 +127,16 @@ class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin):
         route_function = self._handle_file_uploads(route_function)
 
         # Prepare result tracking
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
+        # result = JobResultFactory.from_base_job(job)
         result = JobResult(id=job['id'], execution_started_at=start_time.strftime("%Y-%m-%dT%H:%M:%S.%f%z"))
 
         try:
             # Execute the function
             res = route_function(**kwargs)
 
-            # Convert result to JSON if it's a MediaFile
-            if is_param_media_toolkit_file(type(res)):
-                res = res.to_json()
+            # Convert result to JSON if it's a MediaFile / MediaList
+            res = JobResultFactory._serialize_result(res)
 
             result.result = res
             result.status = JOB_STATUS.FINISHED.value
@@ -148,12 +146,9 @@ class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin):
             print(f"Job {job['id']} failed: {str(e)}")
             traceback.print_exc()
         finally:
-            result.execution_finished_at = datetime.utcnow().strftime(DEFAULT_DATE_TIME_FORMAT)
+            result.execution_finished_at = datetime.now(timezone.utc).strftime(DEFAULT_DATE_TIME_FORMAT)
 
-        # Runpod expects dict and does not auto-serialize
-        result = result.dict()
-        result = json.dumps(result)
-
+        result = result.model_dump_json()
         return result
 
     def handler(self, job):
