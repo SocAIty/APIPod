@@ -187,6 +187,9 @@ class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin):
                     '''
         rp_fastapi.RUN_DESCRIPTION = desc + "\n" + rp_fastapi.RUN_DESCRIPTION
 
+        # hack to print version also in runpod
+        version = self.version
+
         class WorkerAPIWithModifiedInfo(rp_fastapi.WorkerAPI):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
@@ -196,7 +199,7 @@ class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin):
             def custom_openapi(self):
                 if not self.rp_app.openapi_schema:
                     self._orig_openapi_func()
-                self.rp_app.openapi_schema["info"]["fast-task-api"] = self.version
+                self.rp_app.openapi_schema["info"]["fast-task-api"] = version
                 self.rp_app.openapi_schema["info"]["runpod"] = rp_fastapi.runpod_version
                 return self.rp_app.openapi_schema
 
