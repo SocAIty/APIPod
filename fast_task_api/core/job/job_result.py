@@ -8,6 +8,7 @@ from fast_task_api.compatibility.upload import is_param_media_toolkit_file
 from fast_task_api.core.job.base_job import JOB_STATUS, BaseJob
 from fast_task_api.settings import DEFAULT_DATE_TIME_FORMAT
 from media_toolkit import IMediaContainer
+from media_toolkit.utils.data_type_utils import is_file_model_dict
 
 
 class FileModel(BaseModel):
@@ -99,6 +100,12 @@ class JobResultFactory:
 
         if is_param_media_toolkit_file(data):
             return FileModel(**data.to_json())
+
+        if isinstance(data, FileModel):
+            return data
+
+        if is_file_model_dict(data):
+            return FileModel(**data)
 
         # Handle list of MediaLists/MediaFiles/other items
         if isinstance(data, list):
