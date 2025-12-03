@@ -1,5 +1,5 @@
 <h1 align="center">APIPod</h1>
-<h3 align="center">Build, Deploy, and Scale AI Services with Ease</h3>
+<h3 align="center">Build, Deploy, and publish AI Services with Ease</h3>
 
 <p align="center">
   <a href="https://www.socaity.com">
@@ -8,16 +8,15 @@
 </p>
 
 <p align="center">
-  <b>APIPod</b> is the effortless framework for building and deploying AI services. <br/>
+  <b>APIPod</b> is the way for building and deploying AI services. <br/>
   Combining the developer experience of <b>FastAPI</b> with the power of <b>Serverless GPU</b> computing.
 </p>
 
 <p align="center">
+  <a href="#why-apipod">Why APIPod</a> •
   <a href="#installation">Installation</a> •
   <a href="#quick-start">Quick Start</a> •
-  <a href="#features">Features</a> •
-  <a href="#deployment">Deployment</a> •
-  <a href="#why-apipod">Why APIPod?</a>
+  <a href="#deployment">Deployment</a> 
 </p>
 
 ---
@@ -118,12 +117,11 @@ When deploying to serverless platforms like **RunPod**, standard web frameworks 
 # Deployment
 APIPod is designed to run anywhere by leveraging docker.
 <p align="left">
-  <a href="#installation">Serverless</a> •
-  <a href="#quick-start">Docker</a> •
-  <a href="#features">Runpod</a> 
+  <a href="#Create & configure container">Build & configure</a> •
+  <a href="#Deploy to socaity">Deploy</a> •
 </p>
 
-## Create & build container
+## Create & configure container
 
 All you need to do is run:
 
@@ -133,7 +131,7 @@ apipod build
 This command creates the dockerfile and the server configuration file for you.
 
 It will ask you a few questions like GPU support if not configured earlier for deploying the service.
-
+Advanced users can also configure or write the docker and the yaml files theirsels.
 
 ## Deploy to socaity
 Right after build you can deploy the service via the [socaity.ai](https://www.socaity.ai) dashboard.
