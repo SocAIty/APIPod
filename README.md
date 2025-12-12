@@ -137,6 +137,55 @@ Requirements:
 1. docker installed on your system.
 2. Depending on your setup a cuda/cudnn installation
 
+
+### 🔄 Queue Backend Support
+
+APIPod supports multiple job queue backends to handle different deployment scenarios and scaling needs.
+
+#### Available Backends
+
+- **Local Queue** (`local`): In-memory job queue using threading (default)
+  - Perfect for local development and single-instance deployments
+  - No external dependencies required
+  - Uses ThreadPoolExecutor for better resource management
+
+- **Redis Queue** (`redis`): Distributed job queue using Redis
+  - Ideal for production deployments and horizontal scaling
+  - Supports multiple API instances sharing the same queue
+  - Jobs persist across container restarts and deployments
+
+#### Configuration
+
+```python
+# Explicit configuration
+app = APIPod(
+    backend="fastapi",
+    queue_backend="redis",  # or "local"
+    redis_url="redis://localhost:6379"
+)
+
+# Or via environment variables
+import os
+os.environ["APIPOD_QUEUE_BACKEND"] = "redis"
+os.environ["APIPOD_REDIS_URL"] = "redis://your-redis-instance:6379"
+
+app = APIPod()  # Uses environment config
+```
+
+#### When to Use Redis
+
+Use Redis when:
+- Deploying to multiple containers/instances
+- Needing job persistence across restarts
+- Running in Azure Container Apps or similar scalable environments
+- Processing high volumes of concurrent jobs
+
+Use Local when:
+- Developing locally
+- Running single-instance deployments
+- Minimal dependencies are preferred
+
+
 ### Troubleshooting
 
 You are always free to create or edit the Dockerfile for your needs.
