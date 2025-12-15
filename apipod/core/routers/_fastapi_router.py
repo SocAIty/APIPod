@@ -68,7 +68,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
         self.add_standard_routes()
 
         # excpetion handling
-        _FastAPIExceptionHandler.__init__(self, *args, **kwargs)
+        _FastAPIExceptionHandler.__init__(self)
         if not getattr(self.app.state, "_socaity_exception_handler_added", False):
             self.app.add_exception_handler(Exception, self.global_exception_handler)
             self.app.state._socaity_exception_handler_added = True

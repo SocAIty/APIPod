@@ -70,6 +70,7 @@ class _SocaityRouter:
         """
         raise NotImplementedError("Implement in subclass. Use a decorator for that.")
 
+
     def get(self, path: str = None, queue_size: int = 1, *args, **kwargs):
         raise NotImplementedError("Implement in subclass. Consider using add_route instead.")
 

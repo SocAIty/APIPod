@@ -30,19 +30,19 @@ class MoreParams(BaseModel):
 
 @app.endpoint("/mixed_media")
 def test_mixed_media(
-        job_progress: JobProgress,
-        anyfile1: Optional[MediaFile],
-        anyfile2: FileModel,
-        anyfile3: fastapiUploadFile,
-        img: ImageFile | str | bytes | FileModel,
-        audio: AudioFile,
-        video: VideoFile,
-        anyfiles: List[MediaFile],
-        a_base_model: Optional[MoreParams],
-        anint2: int,
-        anyImages: List[ImageFile] = ["default_value"],
-        astring: str = "master_of_desaster",
-        anint: int = 42
+    job_progress: JobProgress,
+    anyfile1: Optional[MediaFile],
+    anyfile2: FileModel,
+    anyfile3: fastapiUploadFile,
+    img: ImageFile | str | bytes | FileModel,
+    audio: AudioFile,
+    video: VideoFile,
+    anyfiles: List[MediaFile],
+    a_base_model: Optional[MoreParams],
+    anint2: int,
+    anyImages: List[ImageFile] = ["default_value"],
+    astring: str = "master_of_desaster",
+    anint: int = 42
 ):
     content_one = anyfile1.to_base64()
     content_two = img.to_base64()

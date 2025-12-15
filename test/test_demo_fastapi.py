@@ -4,6 +4,13 @@ from apipod import ImageFile
 import time
 import numpy as np
 
+
+import fastapi
+
+
+app = fastapi.FastAPI()
+
+
 # define the app including your provider (fastapi, runpod..)
 app = APIPod()
 
