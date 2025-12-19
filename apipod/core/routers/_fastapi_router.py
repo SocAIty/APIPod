@@ -1,8 +1,10 @@
 import functools
 import inspect
 from typing import Union, Callable
-from fastapi import APIRouter, FastAPI, Response
+from fastapi import APIRouter, FastAPI, Response, Request
+from pydantic import BaseModel
 
+from apipod.core.routers.schemas import ChatCompletionRequest, ChatCompletionResponse, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse
 from apipod.settings import APIPOD_PORT, APIPOD_HOST, SERVER_DOMAIN
 from apipod.CONSTS import SERVER_HEALTH
 from apipod.core.job.job_result import JobResultFactory, JobResult
@@ -135,41 +137,195 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
 
         return ret_job
 
-    @functools.wraps(APIRouter.api_route)
-    def endpoint(self, path: str, methods: list[str] = None, max_upload_file_size_mb: int = None, queue_size: int = 500, use_queue: bool = None, *args, **kwargs):
-        """
-        Unified endpoint decorator.
-
-        If job_queue is configured (and use_queue is not False), it creates a task endpoint.
-        Otherwise, it creates a standard FastAPI endpoint.
-
-        Args:
-            path: API path
-            methods: List of HTTP methods (e.g. ["POST"])
-            max_upload_file_size_mb: Max upload size for files
-            queue_size: Max queue size (only if using queue)
-            use_queue: Force enable/disable queue. If None, auto-detect based on job_queue presence.
-        """
+    def endpoint(self, path: str, methods: list[str] | None = None, max_upload_file_size_mb: int = None, queue_size: int = 500, use_queue: bool = None, *args, **kwargs):
+        import time
+        import uuid
+        from fastapi.concurrency import run_in_threadpool
+        
         normalized_path = self._normalize_endpoint_path(path)
         should_use_queue = self._determine_queue_usage(use_queue, normalized_path)
 
-        if should_use_queue:
-            return self._create_task_endpoint_decorator(
-                path=normalized_path,
-                methods=methods,
-                max_upload_file_size_mb=max_upload_file_size_mb,
-                queue_size=queue_size,
-                args=args,
-                kwargs=kwargs
-            )
-        else:
-            return self._create_standard_endpoint_decorator(
-                path=normalized_path,
-                methods=methods,
-                max_upload_file_size_mb=max_upload_file_size_mb,
-                args=args,
-                kwargs=kwargs
-            )
+        model_map = {
+            ChatCompletionRequest: (ChatCompletionResponse, "chat"),
+            CompletionRequest: (CompletionResponse, "completion"),
+            EmbeddingRequest: (EmbeddingResponse, "embedding"),
+        }
+
+        def decorator(func: Callable) -> Callable:
+            # 1. Auto-Detection
+            sig = inspect.signature(func)
+            request_model = None
+            response_model = None
+            endpoint_type_str = None
+            
+            for param in sig.parameters.values():
+                ann = param.annotation
+                if inspect.isclass(ann) and ann in model_map:
+                    request_model = ann
+                    response_model, endpoint_type_str = model_map[ann]
+                    break
+            
+            # 2. Fallback: Standard Endpoint
+            if request_model is None:
+                if should_use_queue:
+                    return self._create_task_endpoint_decorator(
+                        path=normalized_path, methods=methods, max_upload_file_size_mb=max_upload_file_size_mb, 
+                        queue_size=queue_size, args=args, kwargs=kwargs
+                    )(func)
+                else:
+                    return self._create_standard_endpoint_decorator(
+                        path=normalized_path, methods=methods, max_upload_file_size_mb=max_upload_file_size_mb, 
+                        args=args, kwargs=kwargs
+                    )(func)
+            
+            assert response_model is not None
+            assert endpoint_type_str is not None
+
+            # 3. LLM Endpoint Logic
+            @functools.wraps(func)
+            async def _unified_worker(*w_args, **w_kwargs):
+                # A. Extract Request Model
+                openai_req = None
+                for arg in w_args:
+                    if isinstance(arg, request_model): openai_req = arg; break
+                if not openai_req:
+                    for val in w_kwargs.values():
+                        if isinstance(val, request_model): openai_req = val; break
+                
+                request_obj = next((arg for arg in w_args if isinstance(arg, Request)), 
+                                 next((val for val in w_kwargs.values() if isinstance(val, Request)), None))
+                
+                if openai_req is None and request_obj:
+                    try:
+                        # Pydantic usage: parse raw JSON body
+                        body = await request_obj.json()
+                        openai_req = request_model.model_validate(body)
+                    except Exception: pass
+                
+                if request_obj and openai_req:
+                    request_obj.state.openai_request = openai_req
+
+                # B. Execute User Function
+                if inspect.iscoroutinefunction(func):
+                    result = await func(*w_args, **w_kwargs)
+                else:
+                    result = await run_in_threadpool(func, *w_args, **w_kwargs)
+                
+                # C. Pydantic Response Construction
+                model_name = getattr(openai_req, "model", "unknown") if openai_req else "unknown"
+                timestamp = int(time.time())
+
+                # 1. Pass through if it is already the correct Pydantic Object
+                if isinstance(result, response_model):
+                    return result
+
+                # 2. Handle Dictionary Responses (Partial or Full)
+                if isinstance(result, dict):
+                    # If it's a Chat/Completion dict with "choices"
+                    if "choices" in result:
+                        return response_model(
+                            id=result.get("id", f"chatcmpl-{uuid.uuid4().hex[:8]}"),
+                            object=result.get("object", "chat.completion"),
+                            created=result.get("created", timestamp),
+                            model=result.get("model", model_name),
+                            choices=result["choices"],
+                            usage=result.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+                        )
+                    # If it's an Embedding dict with "data"
+                    elif "data" in result and endpoint_type_str == "embedding":
+                         return response_model(
+                            object=result.get("object", "list"),
+                            data=result["data"],
+                            model=result.get("model", model_name),
+                            usage=result.get("usage", {"prompt_tokens": 0, "total_tokens": 0})
+                        )
+
+                # 3. Fallback: Treat result as raw content string (Auto-Wrap)
+                if endpoint_type_str == "chat":
+                    # Handle diverse return types
+                    content = result
+                    if isinstance(result, dict):
+                        content = result.get("content", result.get("message", str(result)))
+                    
+                    return response_model(
+                        id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                        object="chat.completion",
+                        created=timestamp,
+                        model=model_name,
+                        choices=[{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": str(content)},
+                            "finish_reason": "stop"
+                        }],
+                        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                    )
+
+                elif endpoint_type_str == "completion":
+                    text = result
+                    if isinstance(result, dict):
+                        text = result.get("text", str(result))
+                        
+                    return response_model(
+                        id=f"cmpl-{uuid.uuid4().hex[:8]}",
+                        object="text_completion",
+                        created=timestamp,
+                        model=model_name,
+                        choices=[{
+                            "text": str(text),
+                            "index": 0,
+                            "logprobs": None,
+                            "finish_reason": "stop"
+                        }],
+                        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                    )
+
+                elif endpoint_type_str == "embedding":
+                    embedding = result
+                    if isinstance(result, dict):
+                        embedding = result.get("embedding")
+                    
+                    if not isinstance(embedding, list):
+                         raise ValueError("Result must be a list or dict with 'embedding'")
+
+                    return response_model(
+                        object="list",
+                        data=[{
+                            "object": "embedding",
+                            "embedding": embedding,
+                            "index": 0
+                        }],
+                        model=model_name,
+                        usage={"prompt_tokens": 0, "total_tokens": 0}
+                    )
+                
+                return result
+
+
+            # 4. Route Registration
+            active_methods = ["POST"] if methods is None else methods
+
+            if should_use_queue:
+                queued_func = self.job_queue_func(
+                    path=normalized_path, queue_size=queue_size, *args, **kwargs
+                )(_unified_worker)
+                
+                final_handler = self._prepare_func_for_media_file_upload_with_fastapi(
+                    queued_func, max_upload_file_size_mb
+                )
+                self.api_route(
+                    path=normalized_path, methods=active_methods, response_model=JobResult, *args, **kwargs
+                )(final_handler)
+                return final_handler
+            else:
+                final_handler = self._prepare_func_for_media_file_upload_with_fastapi(
+                    _unified_worker, max_upload_file_size_mb
+                )
+                self.api_route(
+                    path=normalized_path, methods=active_methods, response_model=response_model, *args, **kwargs
+                )(final_handler)
+                return final_handler
+
+        return decorator
 
     def _normalize_endpoint_path(self, path: str) -> str:
         """Normalize the endpoint path to ensure it starts with '/'."""
@@ -185,7 +341,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
 
         return self.job_queue is not None
 
-    def _create_task_endpoint_decorator(self, path: str, methods: list[str], max_upload_file_size_mb: int, queue_size: int, args, kwargs):
+    def _create_task_endpoint_decorator(self, path: str, methods: list[str] | None, max_upload_file_size_mb: int, queue_size: int, args, kwargs):
         """Create a decorator for task endpoints (background job execution)."""
         # FastAPI route decorator (returning JobResult)
         fastapi_route_decorator = self.api_route(
@@ -212,7 +368,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
 
         return decorator
 
-    def _create_standard_endpoint_decorator(self, path: str, methods: list[str], max_upload_file_size_mb: int, args, kwargs):
+    def _create_standard_endpoint_decorator(self, path: str, methods: list[str] | None, max_upload_file_size_mb: int, args, kwargs):
         """Create a decorator for standard endpoints (direct execution)."""
         # FastAPI route decorator
         fastapi_route_decorator = self.api_route(
