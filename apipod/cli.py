@@ -50,14 +50,25 @@ def select_base_image(manager: DeploymentManager, config_data: dict) -> str:
         print("Invalid selection. Please try again.")
 
 
-def get_or_create_config(manager: DeploymentManager) -> Optional[dict]:
-    """Load existing config or create new one through scanning."""
+def get_or_create_config(manager: DeploymentManager, target_file: Optional[str] = None) -> Optional[dict]:
+    """
+    Load existing config or create new one through scanning.
+    If target_file is provided, scanning will focus on that file.
+    """
+    def perform_scan():
+        if target_file:
+            print(f"Scanning project with target file: {target_file}...")
+            return manager.scan(target_file)
+        else:
+            print("Scanning project...")
+            return manager.scan()
+    
     if manager.config_exists:
         if not input_yes_no(f"Found {manager.config_path.name} in {manager.config_path.parent}/. Overwrite?"):
             return manager.load_config()
 
         print("Rescanning project...")
-        config_data = manager.scan()
+        config_data = perform_scan()
         manager.save_config(config_data)
         return config_data
 
@@ -83,6 +94,8 @@ def run_build(args):
     """Run the build process for creating a deployment-ready container."""
     manager = DeploymentManager()
 
+    target_file = args.build if isinstance(args.build, str) else None
+
     # Check if we should create/update the Dockerfile
     if manager.dockerfile_exists and not input_yes_no("Deployment config DOCKERFILE exists. Overwrite your deployment config?"):
         print("Aborting build configuration.")
@@ -91,7 +104,7 @@ def run_build(args):
     should_create_dockerfile = True
 
     # Load or create configuration
-    config_data = get_or_create_config(manager)
+    config_data = get_or_create_config(manager, target_file)
     if not config_data:
         print("Error: Failed to obtain configuration.")
         return
@@ -125,8 +138,8 @@ def run_build(args):
 def main():
     """Main entry point for the APIPod CLI."""
     parser = argparse.ArgumentParser(description="APIPod CLI")
-    parser.add_argument("-build", action="store_true", help="Build the service container")
-    parser.add_argument("-scan", action="store_true", help="Scan project and generate apipod.json")
+    parser.add_argument("--build", nargs="?", const=True, help="Build the service container. You can optionally specify a target file (e.g., --build main.py)")
+    parser.add_argument("--scan", action="store_true", help="Scan project and generate apipod.json")
 
     args = parser.parse_args()
 
