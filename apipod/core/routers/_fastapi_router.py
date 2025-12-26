@@ -139,7 +139,19 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
 
     def endpoint(self, path: str, methods: list[str] | None = None, max_upload_file_size_mb: int = None, queue_size: int = 500, use_queue: bool = None, *args, **kwargs):
         """
-        TODO: Streaming on normal endpoints
+        Unified endpoint decorator.
+
+        If LLM configuration is detected on the function, it creates an LLM endpoint.
+
+        If job_queue is configured (and use_queue is not False), it creates a task endpoint.
+        Otherwise, it creates a standard FastAPI endpoint.
+
+        Args:
+            path: API path
+            methods: List of HTTP methods (e.g. ["POST"])
+            max_upload_file_size_mb: Max upload size for files
+            queue_size: Max queue size (only if using queue)
+            use_queue: Force enable/disable queue. If None, auto-detect based on job_queue presence.
         """
         normalized_path = self._normalize_endpoint_path(path)
         should_use_queue = self._determine_queue_usage(use_queue, normalized_path)
