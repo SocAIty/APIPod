@@ -1,13 +1,21 @@
 FROM {{ base_image }}
 
+# Avoid interactive prompts during apt-get
+ENV DEBIAN_FRONTEND=noninteractive
+
 SHELL ["/bin/bash", "-c"]
 
-# Install system dependencies together with optional extras.
-# Always install gcc for reliability; some ML packages still need compilation from source.
-# Others we detect automatically based on the deployment flags.
+# 1. Install System Dependencies
+# We detect if the base is Ubuntu/NVIDIA to ensure python3-pip is installed
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     gcc g++ \
+    curl \
+    ca-certificates \
+{%- if "nvidia" in base_image or "runpod" in base_image %}
+    python3-pip \
+    python3-dev \
+{%- endif %}
 {%- if "libturbojpg" in system_packages %}
     libturbojpeg \
 {%- endif %}
@@ -15,31 +23,48 @@ RUN apt-get update && apt-get install -y \
     libcudnn9-cuda-12 \
     libcudnn9-dev-cuda-12 \
 {%- endif %}
-    && apt-get clean
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 2. Path & Alias Normalization
+# If using NVIDIA base, ensure 'python' and 'pip' commands work
+{%- if "nvidia" in base_image or "runpod" in base_image %}
+RUN ln -s /usr/bin/python3 /usr/bin/python || true
+{%- endif %}
+
 {%- if install_cudnn %}
 # Ensure CUDA and cuDNN libraries are in the library path
-ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 {%- endif %}
 
 # Set the working directory
-WORKDIR /
+WORKDIR /app
 
-# Install Python dependencies
+# 3. Python Dependency Installation
 RUN pip install --upgrade pip
-{%- if has_requirements %}
-RUN pip install -r requirements.txt
-{%- endif %}
-RUN pip install runpod>=1.7.7 && \
-    pip install . --no-cache
 
-# Configure APIPod for RunPod Serverless
+{%- if has_requirements %}
+# Copy requirements first to leverage Docker layer caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+{%- endif %}
+
+# Install APIPod and specific serverless requirements
+RUN pip install --no-cache-dir runpod>=1.7.7
+
+# 4. App Deployment
+# Copy the current directory into the container
+COPY . .
+# Install the current project in editable mode or as a package
+RUN pip install --no-cache-dir .
+
+# Configuration for RunPod/APIPod
 ENV APIPOD_BACKEND="runpod"
 ENV APIPOD_DEPLOYMENT="serverless"
-
-ARG port=8080
-ENV APIPOD_PORT=$port
-EXPOSE $port
 ENV APIPOD_HOST="0.0.0.0"
+ENV APIPOD_PORT=8000
+
+EXPOSE 8000
 
 # Set the entrypoint
+# We use uvicorn to serve the APIPod instance
 CMD ["uvicorn", "{{ entrypoint_module }}:app", "--host", "0.0.0.0", "--port", "8000"]

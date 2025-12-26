@@ -1,21 +1,17 @@
 from pathlib import Path
 import subprocess
 from typing import Any, Dict, List, Optional
-
 from jinja2 import Environment, FileSystemLoader
-
 
 class DockerFactory:
     """
-    Encapsulates all Docker-related operations:
-    - base image recommendation
-    - Dockerfile rendering
-    - Dockerfile persistence
-    - docker build execution
+    Encapsulates all Docker-related operations.
     """
 
+    # Updated to use more robust base images
     DEFAULT_IMAGES = [
         "python:3.10-slim",
+        "nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04", # Standard CUDA Runtime
         "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
     ]
 
@@ -43,27 +39,35 @@ class DockerFactory:
                     if images:
                         return images
             except Exception:
-                # Fall back to defaults if the list cannot be read
                 pass
         return self.DEFAULT_IMAGES.copy()
 
     def recommend_image(self, config: Dict[str, Any]) -> str:
         """
-        Select an image that matches the detected framework requirements.
+        Optimized image recommendation logic.
         """
-        if config.get("pytorch") and config.get("cuda"):
-            for img in self.images:
-                if "runpod/pytorch" in img:
-                    return img
-            return "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
+        has_cuda = config.get("cuda", False)
+        has_pytorch = config.get("pytorch", False)
+        
+        # If CUDA is needed, NEVER use python-slim
+        if has_cuda or has_pytorch or config.get("tensorflow") or config.get("onnx"):
+            # Priority 1: RunPod specialized PyTorch image
+            if has_pytorch:
+                for img in self.images:
+                    if "runpod/pytorch" in img:
+                        return img
+                return "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
+            
+            # Priority 2: Standard NVIDIA CUDA image (solves the 'locate package' error)
+            return "nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04"
 
-        python_version = str(config.get("python_version") or "")
-        if python_version:
-            for img in self.images:
-                if f"python:{python_version}-slim" in img:
-                    return img
+        # Fallback to standard Python for CPU tasks
+        python_version = str(config.get("python_version") or "3.10")
+        for img in self.images:
+            if f"python:{python_version}-slim" in img:
+                return img
 
-        return self.DEFAULT_IMAGES[0]
+        return "python:3.10-slim"
 
     def render_dockerfile(self, base_image: str, config: Dict[str, Any]) -> str:
         has_requirements = (self.project_root / "requirements.txt").exists()
@@ -72,11 +76,21 @@ class DockerFactory:
             Path(entrypoint).with_suffix("").as_posix().replace("/", ".").replace("\\", ".")
         )
 
+        # FIX: Only attempt to install cuDNN if we are NOT using an NVIDIA base image.
+        # NVIDIA images already have cuDNN, and their apt repos work.
+        # Debian/Python-slim images will fail to find these packages.
+        is_nvidia_base = "nvidia/cuda" in base_image or "runpod/" in base_image
+        
+        should_install_cudnn = (
+            bool(config.get("tensorflow") or config.get("onnx")) 
+            and not is_nvidia_base
+        )
+
         context = {
             "base_image": base_image,
             "has_requirements": has_requirements,
             "entrypoint_module": entrypoint_module,
-            "install_cudnn": bool(config.get("tensorflow") or config.get("onnx")),
+            "install_cudnn": should_install_cudnn,
             "system_packages": config.get("system_packages", []),
         }
         return self.docker_template.render(**context)
@@ -89,6 +103,7 @@ class DockerFactory:
         return dockerfile_path
 
     def build_image(self, tag: str, dockerfile_path: Path, context_dir: Path) -> bool:
+        # Using context_dir as the build context (project root)
         cmd = ["docker", "build", "-t", tag, "-f", str(dockerfile_path), str(Path(context_dir))]
         print(f"Running: {' '.join(cmd)}")
         try:
@@ -96,7 +111,7 @@ class DockerFactory:
             print("Build completed successfully.")
             return True
         except FileNotFoundError:
-            print("Error: 'docker' command not found. Is Docker installed and in your PATH?")
+            print("Error: 'docker' command not found.")
         except subprocess.CalledProcessError:
             print("Docker build failed.")
         return False
