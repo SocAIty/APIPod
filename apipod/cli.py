@@ -1,5 +1,6 @@
 import argparse
 import sys
+from pathlib import Path
 from typing import Optional
 
 from apipod.deploy.deployment_manager import DeploymentManager
@@ -73,7 +74,7 @@ def get_or_create_config(manager: DeploymentManager, target_file: Optional[str] 
         return config_data
 
     print(f"No {manager.config_path.name} found. Scanning project...")
-    config_data = manager.scan()
+    config_data = perform_scan()
     manager.save_config(config_data)
     return config_data
 
@@ -94,7 +95,27 @@ def run_build(args):
     """Run the build process for creating a deployment-ready container."""
     manager = DeploymentManager()
 
-    target_file = args.build if isinstance(args.build, str) else None
+    # Handle target file argument
+    target_file = None
+    if args.build is not None and args.build is not True:
+        target_file = args.build
+        
+        # Validate target file exists
+        target_path = Path(target_file)
+        if not target_path.exists():
+            print(f"Error: Target file '{target_file}' does not exist.")
+            return
+        
+        if not target_path.is_file():
+            print(f"Error: '{target_file}' is not a file.")
+            return
+        
+        if not target_path.suffix == '.py':
+            print(f"Warning: '{target_file}' is not a Python file (.py)")
+            if not input_yes_no("Continue anyway?", default=False):
+                return
+        
+        print(f"Using target file: {target_file}")
 
     # Check if we should create/update the Dockerfile
     if manager.dockerfile_exists and not input_yes_no("Deployment config DOCKERFILE exists. Overwrite your deployment config?"):
@@ -137,15 +158,35 @@ def run_build(args):
 
 def main():
     """Main entry point for the APIPod CLI."""
-    parser = argparse.ArgumentParser(description="APIPod CLI")
-    parser.add_argument("--build", nargs="?", const=True, help="Build the service container. You can optionally specify a target file (e.g., --build main.py)")
-    parser.add_argument("--scan", action="store_true", help="Scan project and generate apipod.json")
+    parser = argparse.ArgumentParser(
+        description="APIPod CLI - Build and deploy serverless API containers",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  apipod --scan                    Scan project and generate apipod.json
+  apipod --build                   Build container using current directory
+  apipod --build ./main.py         Build container with specific entry file
+  apipod --build ./src/app.py      Build container with file in subdirectory
+        """
+    )
+    parser.add_argument(
+        "--build", 
+        nargs="?", 
+        const=True, 
+        metavar="FILE",
+        help="Build the service container. Optionally specify a target Python file (e.g., --build main.py)"
+    )
+    parser.add_argument(
+        "--scan", 
+        action="store_true", 
+        help="Scan project and generate apipod.json configuration file"
+    )
 
     args = parser.parse_args()
 
     if args.scan:
         run_scan()
-    elif args.build:
+    elif args.build is not None:  # Changed from 'elif args.build:' to handle both True and string values
         run_build(args)
     else:
         parser.print_help()

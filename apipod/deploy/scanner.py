@@ -43,12 +43,17 @@ class Scanner:
         self.dependency_detector = DependencyDetector(self.root_path)
         self.env_detector = EnvDetector(self.root_path)
 
-    def scan(self) -> Dict[str, Any]:
+    def scan(self, target_file: Optional[str] = None) -> Dict[str, Any]:
         """
         Runs all detectors and returns an aggregated configuration dictionary.
+        If target_file is provided, it forces the entrypoint to that file.
         """
         print("\n--- Starting Project Scan ---\n")
-        entrypoint_info = self.entrypoint_detector.detect()
+        
+        # Pass the target_file to the entrypoint detector if it supports it
+        # or override the detection result manually below.
+        entrypoint_info = self.entrypoint_detector.detect(target_file=target_file)
+        
         framework_info = self.framework_detector.detect()
         dependency_info = self.dependency_detector.detect()
         env_info = self.env_detector.detect()
@@ -60,7 +65,8 @@ class Scanner:
             system_packages.append("libturbojpg")
 
         deployment_config = DeploymentConfig(
-            entrypoint=entrypoint_info.get("file", "main.py"),
+            # Use the target_file if detection didn't already pick it up
+            entrypoint=entrypoint_info.get("file", target_file or "main.py"),
             title=entrypoint_info.get("title", "apipod-service"),
             python_version=framework_info.get("python_version", "3.10"),
             pytorch=bool(framework_info.get("pytorch")),

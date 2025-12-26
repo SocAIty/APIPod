@@ -52,8 +52,8 @@ class DeploymentManager:
     def dockerfile_exists(self) -> bool:
         return Path(self.dockerfile_path).exists()
 
-    def scan(self) -> Dict[str, Any]:
-        return self.scanner.scan()
+    def scan(self, target_file: Optional[str] | None = None) -> Dict[str, Any]:
+        return self.scanner.scan(target_file=target_file)
 
     def save_config(self, config: Dict[str, Any]) -> None:
         self.scanner.save_report(config)
