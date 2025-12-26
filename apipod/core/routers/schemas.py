@@ -132,3 +132,21 @@ class EmbeddingResponse(OpenAIBaseModel):
     data: List[EmbeddingData]
     model: str
     usage: Usage
+
+# ======================================================
+# Streaming Models
+# ======================================================
+class ChatDelta(BaseModel):
+    content: Optional[str] = None
+
+class ChatStreamChoice(BaseModel):
+    index: int
+    delta: ChatDelta
+    finish_reason: Optional[str] = None
+
+class ChatCompletionChunk(BaseModel):
+    id: str
+    object: Literal["chat.completion.chunk"] = "chat.completion.chunk"
+    created: int
+    model: str
+    choices: List[ChatStreamChoice]
