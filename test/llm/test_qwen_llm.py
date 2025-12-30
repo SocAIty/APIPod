@@ -5,6 +5,8 @@ Local API Server using APIPod - Optimized for AMD ROCm
 from contextlib import asynccontextmanager
 from typing import List, Union
 from datetime import datetime
+import time
+import json
 
 from apipod import APIPod
 from apipod.core.routers import schemas
@@ -308,6 +310,22 @@ def chat_endpoint(payload: schemas.ChatCompletionRequest = Body(...)):
 @app.endpoint(path="/embeddings", use_queue=True)
 def embeddings_endpoint(payload: schemas.EmbeddingRequest = Body(...)):
     return embeddings_logic(payload)
+
+@app.endpoint(path="/stream", use_queue=False)
+def stream_endpoint():
+    def simple_stream():
+        try:
+            for i in range(10):
+                message = {"index": i, "text": f"Message {i}"}
+                yield f"data: {json.dumps(message)}\n\n"
+                time.sleep(1)
+            yield "data: [DONE]\n\n"
+        except GeneratorExit:
+            print("Client disconnected")
+        except Exception as e:
+            yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
+    
+    return simple_stream()
 
 if __name__ == "__main__":
     app.start()

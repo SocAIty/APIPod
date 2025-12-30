@@ -1,6 +1,6 @@
 import functools
 import inspect
-from typing import Union, Callable
+from typing import Union, Callable, get_type_hints, Generator, AsyncGenerator, Iterator, AsyncIterator
 from fastapi import APIRouter, FastAPI, Response
 
 from apipod.settings import APIPOD_PORT, APIPOD_HOST, SERVER_DOMAIN
@@ -159,19 +159,26 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
         def decorator(func: Callable) -> Callable:
             # 1. Auto-Detection
             req_model, res_model, endpoint_type = self._get_llm_config(func)
+            is_generator_fun = self._determine_generator_fun(func)
             
             # 2. Fallback: Standard Endpoint
             if req_model is None:
-                if should_use_queue:
-                    return self._create_task_endpoint_decorator(
-                        path=normalized_path, methods=methods, max_upload_file_size_mb=max_upload_file_size_mb, 
-                        queue_size=queue_size, args=args, kwargs=kwargs
-                    )(func)
-                else:
-                    return self._create_standard_endpoint_decorator(
+                if is_generator_fun:
+                    return self._create_streaming_endpoint_decorator(
                         path=normalized_path, methods=methods, max_upload_file_size_mb=max_upload_file_size_mb, 
                         args=args, kwargs=kwargs
                     )(func)
+                else:
+                    if should_use_queue:
+                        return self._create_task_endpoint_decorator(
+                            path=normalized_path, methods=methods, max_upload_file_size_mb=max_upload_file_size_mb, 
+                            queue_size=queue_size, args=args, kwargs=kwargs
+                        )(func)
+                    else:
+                        return self._create_standard_endpoint_decorator(
+                            path=normalized_path, methods=methods, max_upload_file_size_mb=max_upload_file_size_mb, 
+                            args=args, kwargs=kwargs
+                        )(func)
             
             assert res_model is not None
 
@@ -288,6 +295,39 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
             return use_queue
 
         return self.job_queue is not None
+    
+    def _determine_generator_fun(self, func: Callable) -> bool:
+        """
+        Determine whether the function is streaming data.
+        Uses quick, robust checks for common streaming patterns.
+        """
+        # 1. Direct generator functions
+        if inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(func):
+            return True
+        
+        # 2. Check return type hints
+        try:
+            hints = get_type_hints(func)
+            return_type = hints.get('return')
+            
+            if return_type is not None:
+                origin = getattr(return_type, '__origin__', return_type)
+                streaming_types = (Generator, AsyncGenerator, Iterator, AsyncIterator)
+                
+                if origin in streaming_types or return_type in streaming_types:
+                    return True
+        except Exception:
+            pass
+        
+        # 3. Check source code for yield keyword
+        try:
+            source = inspect.getsource(func)
+            if 'yield' in source:
+                return True
+        except Exception:
+            pass
+        
+        return False
 
     def _create_task_endpoint_decorator(self, path: str, methods: list[str] | None, max_upload_file_size_mb: int, queue_size: int, args, kwargs):
         """Create a decorator for task endpoints (background job execution)."""
@@ -337,6 +377,45 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
         def decorator(func: Callable) -> Callable:
             result_modified = file_result_modification_decorator(func)
             with_file_upload_signature = self._prepare_func_for_media_file_upload_with_fastapi(result_modified, max_upload_file_size_mb)
+            return fastapi_route_decorator(with_file_upload_signature)
+
+        return decorator
+    
+    def _create_streaming_endpoint_decorator(self, path: str, methods: list[str] | None, max_upload_file_size_mb: int, args, kwargs):
+        """Create a decorator for streaming endpoints."""
+        from fastapi.responses import StreamingResponse
+
+        # Extract custom headers if provided
+        custom_headers = kwargs.pop('response_headers', None)
+        
+        fastapi_route_decorator = self.api_route(
+            path=path,
+            methods=["POST"] if methods is None else methods,
+            *args,
+            **kwargs
+        )
+
+        def decorator(func: Callable) -> Callable:
+            @functools.wraps(func)
+            async def streaming_wrapper(*w_args, **w_kwargs):
+                result = await self._execute_func(func, *w_args, **w_kwargs)
+                generator = self._stream_generator(result)
+                
+                # Merge default and custom headers
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no"
+                }
+                if custom_headers:
+                    headers.update(custom_headers)
+                    
+                return StreamingResponse(
+                    generator, 
+                    media_type="text/event-stream",
+                    headers=headers
+                )
+
+            with_file_upload_signature = self._prepare_func_for_media_file_upload_with_fastapi(streaming_wrapper, max_upload_file_size_mb)
             return fastapi_route_decorator(with_file_upload_signature)
 
         return decorator
