@@ -22,7 +22,7 @@ class _FastAPILLMMixin(_BaseLLMMixin):
                 job_params={"payload": openai_req.dict()}
             )
             ret_job = JobResultFactory.from_base_job(job)
-            ret_job.refresh_job_url = f"{SERVER_DOMAIN}/jobs/{job.id}"
+            ret_job.refresh_job_url = f"{SERVER_DOMAIN}/status?job_id={ret_job.id}"
             return ret_job
 
         raw_res = await self._execute_func(func, payload=openai_req, **kwargs)
