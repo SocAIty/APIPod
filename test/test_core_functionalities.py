@@ -9,7 +9,7 @@ from apipod import JobProgress
 from apipod import MediaFile, ImageFile, AudioFile, VideoFile, FileModel
 from fastapi import UploadFile as fastapiUploadFile
 
-app = APIPod()
+app = APIPod(compute="serverless")
 
 
 @app.post(path="/test_job_progress", queue_size=10)
@@ -67,7 +67,8 @@ def test(
 
 if __name__ == "__main__":
     # Runpod version
-    app.start(port=8000, environment="localhost")
-    # app.start(environment="serverless", port=8000)
+    #app.start(port=8000, environment="localhost")
+
+    app.start(environment="serverless", port=8000)
     # app.start(environment="localhost", port=8000)
 

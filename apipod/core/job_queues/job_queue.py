@@ -195,7 +195,7 @@ class JobQueue(JobQueueInterface[T]):
         for job in self.job_store.completed_jobs:
             if job.execution_finished_at is None:
                 self._remove_job(job)
-            elif (datetime.utcnow() - job.execution_finished_at).total_seconds() > self._delete_orphan_jobs_after_seconds:
+            elif (datetime.now(timezone.utc) - job.execution_finished_at).total_seconds() > self._delete_orphan_jobs_after_seconds:
                 self._remove_job(job)
 
     def _start_queued_jobs(self) -> None:
