@@ -57,9 +57,10 @@ COPY . .
 # Install the current project in editable mode or as a package
 RUN pip install --no-cache-dir .
 
-# Configuration for RunPod/APIPod
-ENV APIPOD_BACKEND="runpod"
-ENV APIPOD_DEPLOYMENT="serverless"
+# Configuration for APIPod deployment
+ENV APIPOD_ORCHESTRATOR="{{ orchestrator | default('local') }}"
+ENV APIPOD_COMPUTE="{{ compute | default('serverless') }}"
+ENV APIPOD_PROVIDER="{{ provider | default('runpod') }}"
 ENV APIPOD_HOST="0.0.0.0"
 ENV APIPOD_PORT=8000
 

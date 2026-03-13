@@ -15,7 +15,7 @@ class _QueueMixin:
     """
     def __init__(self, job_queue=None, *args, **kwargs):
         # job_queue is optional. If None, no queue is used.
-        self.job_queue = job_queue 
+        self.job_queue = job_queue
         self.status = SERVER_HEALTH.INITIALIZING
 
     def add_job(self, func: Callable, job_params: dict) -> JobResult:

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from apipod.deploy.deployment_manager import DeploymentManager
+from apipod.CONSTS import ORCHESTRATOR, COMPUTE, PROVIDER
 
 
 def input_yes_no(question: str, default: bool = True) -> bool:
@@ -95,12 +96,10 @@ def run_build(args):
     """Run the build process for creating a deployment-ready container."""
     manager = DeploymentManager()
 
-    # Handle target file argument
     target_file = None
     if args.build is not None and args.build is not True:
         target_file = args.build
         
-        # Validate target file exists
         target_path = Path(target_file)
         if not target_path.exists():
             print(f"Error: Target file '{target_file}' does not exist.")
@@ -117,58 +116,83 @@ def run_build(args):
         
         print(f"Using target file: {target_file}")
 
-    # Check if we should create/update the Dockerfile
     if manager.dockerfile_exists and not input_yes_no("Deployment config DOCKERFILE exists. Overwrite your deployment config?"):
         print("Aborting build configuration.")
         return
 
     should_create_dockerfile = True
 
-    # Load or create configuration
     config_data = get_or_create_config(manager, target_file)
     if not config_data:
         print("Error: Failed to obtain configuration.")
         return
 
+    config_data["orchestrator"] = args.orchestrator
+    config_data["compute"] = args.compute
+    config_data["provider"] = args.provider
+    if args.region:
+        config_data["region"] = args.region
+
     service_title = config_data.get("title", "apipod-service")
 
-    # Select base image
     final_image = select_base_image(manager, config_data)
     if final_image == "Enter custom base image":
         print("Please write your own Dockerfile and config.")
         return
 
-    # Validate dependencies
     if not manager.check_dependencies():
         print("Warning: No pyproject.toml or requirements.txt found.")
         if not input_yes_no("Proceed anyway?", default=False):
             print("Please configure dependencies and try again.")
             return
 
-    # Generate Dockerfile if requested
     if should_create_dockerfile:
-        print("Generating Dockerfile for serverless deployment...")
+        print("Generating Dockerfile...")
         dockerfile_content = manager.render_dockerfile(final_image, config_data)
         manager.write_dockerfile(dockerfile_content)
 
-    # Build Docker image
     if input_yes_no(f"Build the application now using docker? (Tag: {service_title})"):
         manager.build_docker_image(service_title)
 
 
+def run_start(args):
+    """Start an APIPod service with the given configuration."""
+    from apipod import APIPod
+
+    app = APIPod(
+        orchestrator=args.orchestrator,
+        compute=args.compute,
+        provider=args.provider,
+    )
+
+    port = args.port or 8000
+    host = args.host or "0.0.0.0"
+
+    print(f"Starting APIPod (orchestrator={args.orchestrator}, compute={args.compute}, provider={args.provider})")
+    app.start(port=port, host=host)
+
+
 def main():
     """Main entry point for the APIPod CLI."""
+    orchestrator_choices = [e.value for e in ORCHESTRATOR]
+    compute_choices = [e.value for e in COMPUTE]
+    provider_choices = [e.value for e in PROVIDER]
+
     parser = argparse.ArgumentParser(
-        description="APIPod CLI - Build and deploy serverless API containers",
+        description="APIPod CLI - Build and deploy AI service containers",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  apipod --scan                    Scan project and generate apipod.json
-  apipod --build                   Build container using current directory
-  apipod --build ./main.py         Build container with specific entry file
-  apipod --build ./src/app.py      Build container with file in subdirectory
+  apipod --scan                                Scan project and generate apipod.json
+  apipod --build                               Build container using current directory
+  apipod --build ./main.py                     Build container with specific entry file
+  apipod --build --provider runpod             Build for RunPod deployment
+  apipod --start                               Start service locally
+  apipod --start --compute serverless          Start in serverless emulation mode
+  apipod --start --orchestrator socaity        Start with Socaity orchestrator
         """
     )
+
     parser.add_argument(
         "--build", 
         nargs="?", 
@@ -181,13 +205,56 @@ Examples:
         action="store_true", 
         help="Scan project and generate apipod.json configuration file"
     )
+    parser.add_argument(
+        "--start",
+        action="store_true",
+        help="Start the APIPod service locally"
+    )
+
+    config_group = parser.add_argument_group("deployment configuration")
+    config_group.add_argument(
+        "--orchestrator",
+        choices=orchestrator_choices,
+        default="local",
+        help=f"Orchestration platform (default: local). Options: {', '.join(orchestrator_choices)}"
+    )
+    config_group.add_argument(
+        "--compute",
+        choices=compute_choices,
+        default="dedicated",
+        help=f"Compute type (default: dedicated). Options: {', '.join(compute_choices)}"
+    )
+    config_group.add_argument(
+        "--provider",
+        choices=provider_choices,
+        default="localhost",
+        help=f"Infrastructure provider (default: localhost). Options: {', '.join(provider_choices)}"
+    )
+    config_group.add_argument(
+        "--region",
+        default=None,
+        help="Deployment region (provider-specific, e.g. 'us-east-1')"
+    )
+    config_group.add_argument(
+        "--host",
+        default=None,
+        help="Host to bind to (default: 0.0.0.0)"
+    )
+    config_group.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Port to bind to (default: 8000)"
+    )
 
     args = parser.parse_args()
 
     if args.scan:
         run_scan()
-    elif args.build is not None:  # Changed from 'elif args.build:' to handle both True and string values
+    elif args.build is not None:
         run_build(args)
+    elif args.start:
+        run_start(args)
     else:
         parser.print_help()
 

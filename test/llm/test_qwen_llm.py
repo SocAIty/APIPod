@@ -246,10 +246,8 @@ def embeddings_logic(payload: schemas.EmbeddingRequest):
 # ============================================================================
 
 app = APIPod(
-    backend="runpod", 
-    lifespan=lifespan, 
-    queue_backend="redis", 
-    redis_url="redis://localhost:6379/0"
+    backend="runpod",
+    lifespan=lifespan,
 )
 
 @app.endpoint(path="/chat", use_queue=False)

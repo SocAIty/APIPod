@@ -8,6 +8,7 @@ from apipod.core.job.job_result import FileModel, ImageFileModel, AudioFileModel
 from apipod.core.routers.router_mixins._base_file_handling_mixin import _BaseFileHandlingMixin
 from apipod.core.utils import replace_func_signature
 from media_toolkit import MediaList, MediaDict, ImageFile, AudioFile, VideoFile, MediaFile
+import functools
 
 
 class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
@@ -235,20 +236,57 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
     def _prepare_func_for_media_file_upload_with_fastapi(self, func: callable, max_upload_file_size_mb: float = None) -> callable:
         """
         Prepare a function for FastAPI
-        1. Removes job progress parameter from the function signature
-        2. Adds file upload logic to convert parameters
-        3. Replaces upload file parameters with FastAPI File type
+        1. Adds file upload logic to convert parameters
+        2. Injects a dummy JobProgress if the function expects it but we're not using a queue
+        3. Removes job progress parameter from the function signature (for OpenAPI docs)
+        4. Replaces upload file parameters with FastAPI File type
         """
-        # Remove job progress parameter
-        no_job_progress = self._remove_job_progress_from_signature(func)
+        # 1. Add file upload conversion logic (must be first to handle positional args)
+        file_upload_modified = self._handle_file_uploads(func)
 
-        # Add file upload conversion logic
-        file_upload_modified = self._handle_file_uploads(no_job_progress)
+        # 2. Inject dummy JobProgress if needed (for non-queued endpoints)
+        with_dummy_progress = self._inject_dummy_job_progress(file_upload_modified)
 
-        # Update signature with file upload parameters
-        with_file_upload_signature = self._update_signature(file_upload_modified, max_upload_file_size_mb)
+        # 3. Remove job progress parameter from signature (so it doesn't show in OpenAPI)
+        no_job_progress = self._remove_job_progress_from_signature(with_dummy_progress)
+
+        # 4. Update signature with file upload parameters (converts to Form/File)
+        with_file_upload_signature = self._update_signature(no_job_progress, max_upload_file_size_mb)
 
         return with_file_upload_signature
+
+    def _inject_dummy_job_progress(self, func: Callable) -> Callable:
+        """
+        Wrap the function to inject a dummy JobProgress instance if the original
+        function expects one. This is used for non-queued FastAPI endpoints.
+        """
+        from apipod.core.job.job_progress import JobProgress
+        
+        sig = inspect.signature(func)
+        job_progress_params = [
+            p.name for p in sig.parameters.values()
+            if p.name == "job_progress" or "FastJobProgress" in str(p.annotation)
+        ]
+
+        if not job_progress_params:
+            return func
+
+        if inspect.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def wrapper(*args, **kwargs):
+                for param_name in job_progress_params:
+                    if param_name not in kwargs:
+                        kwargs[param_name] = JobProgress()
+                return await func(*args, **kwargs)
+        else:
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                for param_name in job_progress_params:
+                    if param_name not in kwargs:
+                        kwargs[param_name] = JobProgress()
+                return func(*args, **kwargs)
+
+        return wrapper
 
     def _remove_job_progress_from_signature(self, func: Callable) -> Callable:
         """

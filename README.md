@@ -80,13 +80,41 @@ Visit `http://localhost:8000/docs` to see your auto-generated Swagger UI.
 
 ## Features in Depth
 
-### 🔄 Asynchronous Jobs & Polling
-For long-running tasks (e.g., inference of a large model), you don't want to block the HTTP request. 
+### 📁 Smart File Handling
+Forget about parsing `multipart/form-data`, `base64`, or `bytes`. APIPod integrates with **MediaToolkit** to handle files as objects.
 
-1. **Enable Job Queue**:
+```python
+from apipod import AudioFile
+
+@app.post("/transcribe")
+def transcribe(audio: AudioFile):
+    # Auto-converts URLs, bytes, or uploads to a usable object
+    audio_data = audio.to_bytes()
+    return {"transcription": "..."}
+```
+
+### ☁️ Serverless Routing
+When deploying to serverless platforms like **RunPod**, standard web frameworks often fail because they lack the necessary routing logic for the platform's specific entry points. **APIPod** detects the environment and handles the routing automatically—no separate "handler" function required.
+
+
+### 🔄 Scaling services, Asynchronous Jobs, Polling and Job Progress 
+
+Let's say you want to serve your service to many users or you have a long-running task.
+Usually you need to set-up a load-balancer, kubernetes, brokers and a lot of other complicated stuff.
+If you deploy to socaity / runpod this is taken care of for you. No Dev-Ops for you.
+
+We allow you to emulate this behaviour for testing.
+
+For long-running tasks (e.g., inference of a large model), you don't want to block the HTTP request. 
+Often you want to be able to give a progress bar or updates about the current task to the user. This is what job progress is for.
+It allows you to communicate a progress percentage and a status message to your user.
+
+
+
+1. **Setup test environment for serverless (Job Queue)**:
    ```python
-   # Initialize with a local queue for development or use another job-queue like 'redis'
-   app = APIPod(queue_backend="local")
+   # Initialize with serverless compute on localhost to enable the local job queue
+   app = APIPod(compute="serverless", provider="localhost")
    ```
 
 2. **Define Endpoint**:
@@ -112,21 +140,6 @@ For long-running tasks (e.g., inference of a large model), you don't want to blo
        return "pong"
    ```
 
-### 📁 Smart File Handling
-Forget about parsing `multipart/form-data`, `base64`, or `bytes`. APIPod integrates with **MediaToolkit** to handle files as objects.
-
-```python
-from apipod import AudioFile
-
-@app.post("/transcribe")
-def transcribe(audio: AudioFile):
-    # Auto-converts URLs, bytes, or uploads to a usable object
-    audio_data = audio.to_bytes()
-    return {"transcription": "..."}
-```
-
-### ☁️ Serverless Routing
-When deploying to serverless platforms like **RunPod**, standard web frameworks often fail because they lack the necessary routing logic for the platform's specific entry points. **APIPod** detects the environment and handles the routing automatically—no separate "handler" function required.
 
 # Deployment
 APIPod is designed to run anywhere by leveraging docker.
@@ -152,6 +165,46 @@ Requirements:
 2. Depending on your setup a cuda/cudnn installation
 
 
+### APIPod Configuration
+APIPod provides a flexible deployment configuration that allows developers to:
+- Run services locally for development
+- Deploy via the Socaity orchestration platform
+- Deploy directly to cloud providers
+- Choose between serverless or dedicated compute
+
+The configuration is controlled through a combination of:
+- orchestrator
+- compute
+- provider
+- region
+- CPU/GPU
+
+
+| Orchestrator     | Compute      | Provider    | Resulting Backend                 |
+| ---------------- | ------------ | ----------- | --------------------------------- |
+| `socaity`        | `dedicated`  | `auto`      | FastAPI                           |
+| `socaity`        | `dedicated`  | `localhost` | FastAPI + job queue *(test  mode)* |
+| `socaity`        | `dedicated`  | `runpod`    | Celery backend *(planned)*        |
+| `socaity`        | `dedicated`  | `scaleway`  | Celery backend *(planned)*        |
+| `socaity`        | `dedicated`  | `azure`     | Celery backend *(planned)*        |
+| `socaity`        | `serverless` | `auto`      | RunPod router backend             |
+| `socaity`        | `serverless` | `localhost` | FastAPI + job queue *(test mode)* |
+| `socaity`        | `serverless` | `runpod`    | RunPod router backend             |
+| `socaity`        | `serverless` | `scaleway`  | ❌ Not supported                   |
+| `socaity`        | `serverless` | `azure`     | ❌ Not supported                   |
+| `local` / `None` | `dedicated`  | `localhost` | FastAPI                           |
+| `local` / `None` | `dedicated`  | `runpod`    | FastAPI                           |
+| `local` / `None` | `dedicated`  | `scaleway`  | FastAPI                           |
+| `local` / `None` | `dedicated`  | `azure`     | FastAPI                           |
+| `local` / `None` | `serverless` | `localhost` | FastAPI + job queue               |
+| `local` / `None` | `serverless` | `runpod`    | RunPod router backend             |
+| `local` / `None` | `serverless` | `scaleway`  | ❌ Not supported                   |
+| `local` / `None` | `serverless` | `azure`     | ❌ Not supported                   |
+| `local` / `None` | `localhost`  | `localhost` | FastAPI                           |
+
+
+
+
 ### 🔄 Queue Backend Support
 
 APIPod supports multiple job queue backends to handle different deployment scenarios and scaling needs.
@@ -163,28 +216,21 @@ APIPod supports multiple job queue backends to handle different deployment scena
 - **Local Queue** (`local`): In-memory job queue using threading.
   - Perfect for local development and single-instance deployments
   - No external dependencies required
-  
-- **Redis Queue** (`redis`): Distributed job queue using Redis
-  - Ideal for production deployments and horizontal scaling
-  - Jobs persist across container restarts and deployments
 
 #### Configuration
 
-```python
-# Explicit configuration
-app = APIPod(
-    backend="fastapi",
-    queue_backend="redis",  # "local", or None
-    redis_url="redis://localhost:6379"
-)
+   ```python
+   # Job queues are automatically enabled based on your configuration.
+   # For example, serverless + localhost enables a local job queue for testing:
+   app = APIPod(compute="serverless", provider="localhost")
 
-# Or via environment variables
-import os
-os.environ["APIPOD_QUEUE_BACKEND"] = "redis"
-os.environ["APIPOD_REDIS_URL"] = "redis://your-redis-instance:6379"
+   # Or via environment variables
+   import os
+   os.environ["APIPOD_COMPUTE"] = "serverless"
+   os.environ["APIPOD_PROVIDER"] = "localhost"
 
-app = APIPod()  # Uses environment config
-```
+   app = APIPod()  # Uses environment config
+   ```
 
 ### Troubleshooting
 
@@ -206,17 +252,20 @@ This is the simplest option.
 3. Deploy on RunPod Serverless by using the runpod dashboard. 
     *   *APIPod acts as the handler, managing job inputs/outputs compatible with RunPod's API.*
 
-Make sure that the environment variables set to the following: ```APIPOD_DEPLOYMENT="serverless"``` and  ```APIPOD_BACKEND="runpod"```
+Make sure that the environment variables are set to the following: ```APIPOD_COMPUTE="serverless"``` and ```APIPOD_PROVIDER="runpod"```
 
 
 ## Debugging APIPod serverless
-You can configure your environment variables in order that APIPod acts as if it where deployed on socaity.ai or on runpod.
+You can configure your environment variables so that APIPod acts as if it were deployed on socaity.ai or on runpod.
 ```bash
-# Deployment Mode
-ENV APIPOD_DEPLOYMENT="serverless" # Options: "localhost" (default), "serverless"
+# Orchestrator
+ENV APIPOD_ORCHESTRATOR="local"    # Options: "local" (default), "socaity"
 
-# Backend Provider
-ENV APIPOD_BACKEND="runpod"      # Options: "fastapi" (default), "runpod"
+# Compute type
+ENV APIPOD_COMPUTE="serverless"    # Options: "dedicated" (default), "serverless"
+
+# Infrastructure provider
+ENV APIPOD_PROVIDER="runpod"       # Options: "localhost" (default), "auto", "runpod", "scaleway", "azure"
 ```
 
 
