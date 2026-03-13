@@ -24,10 +24,10 @@ WORKDIR /
 RUN pip install runpod>=1.7.7 && \
 	pip install . --no-cache
 
-# Configure that apipod shall be started in "runpod" mode and run "serverless"
+# Configure APIPod for RunPod serverless deployment
 
-ENV APIPOD_BACKEND="runpod"
-ENV APIPOD_DEPLOYMENT="serverless"
+ENV APIPOD_COMPUTE="serverless"
+ENV APIPOD_PROVIDER="runpod"
 
 ARG port=8080
 ENV APIPOD_PORT=$port

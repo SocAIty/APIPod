@@ -1,15 +1,22 @@
 from enum import Enum
 
 
-class APIPOD_BACKEND(Enum):
-    RUNPOD = "runpod"
-    FASTAPI = "fastapi"
+class ORCHESTRATOR(Enum):
+    SOCAITY = "socaity"
+    LOCAL = "local"
 
 
-class APIPOD_DEPLOYMENT(Enum):
-    LOCALHOST = "localhost"
-    HOSTED = "hosted"
+class COMPUTE(Enum):
+    DEDICATED = "dedicated"
     SERVERLESS = "serverless"
+
+
+class PROVIDER(Enum):
+    AUTO = "auto"
+    LOCALHOST = "localhost"
+    RUNPOD = "runpod"
+    SCALEWAY = "scaleway"
+    AZURE = "azure"
 
 
 class SERVER_HEALTH(Enum):
@@ -18,8 +25,3 @@ class SERVER_HEALTH(Enum):
     RUNNING = "running"
     BUSY = "busy"
     ERROR = "error"
-
-
-class APIPOD_QUEUE_BACKEND(Enum):
-    LOCAL = "local"
-    REDIS = "redis"

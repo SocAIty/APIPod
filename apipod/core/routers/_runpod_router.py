@@ -14,7 +14,7 @@ from apipod.core.routers.router_mixins._base_file_handling_mixin import _BaseFil
 from apipod.core.routers.router_mixins._runpod_llm_mixin import _RunPodLLMMixin
 
 from apipod.core.utils import normalize_name
-from apipod.settings import APIPOD_DEPLOYMENT, APIPOD_PORT, DEFAULT_DATE_TIME_FORMAT
+from apipod.settings import APIPOD_PROVIDER, APIPOD_PORT, DEFAULT_DATE_TIME_FORMAT
 
 
 class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin, _RunPodLLMMixin):
@@ -464,14 +464,14 @@ class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin, _RunPodLLMMixi
 
         return schema
 
-    def start(self, deployment: Union[CONSTS.APIPOD_DEPLOYMENT, str] = APIPOD_DEPLOYMENT, port: int = APIPOD_PORT, *args, **kwargs):
-        if type(deployment) is str:
-            deployment = APIPOD_DEPLOYMENT(deployment)
+    def start(self, port: int = APIPOD_PORT, provider: Union[CONSTS.PROVIDER, str, None] = None, *args, **kwargs):
+        if provider is None:
+            provider = APIPOD_PROVIDER
+        if isinstance(provider, str):
+            provider = CONSTS.PROVIDER(provider)
 
-        if deployment == deployment.LOCALHOST:
+        if provider == CONSTS.PROVIDER.LOCALHOST:
             self.start_runpod_serverless_localhost(port=port)
-        elif deployment == deployment.SERVERLESS:
+        else:
             import runpod.serverless
             runpod.serverless.start({"handler": self.handler, "return_aggregate_stream": True})
-        else:
-            raise Exception(f"Not implemented for environment {deployment}")
