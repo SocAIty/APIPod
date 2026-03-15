@@ -136,7 +136,8 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
 
     def add_standard_routes(self):
         """Add standard API routes for status and health checks."""
-        self.api_route(path="/status", methods=["POST"])(self.get_job)
+        if self.job_queue is not None:
+            self.api_route(path="/status", methods=["POST"])(self.get_job)
         self.api_route(path="/health", methods=["GET"])(self.get_health)
 
     def get_health(self) -> Response:

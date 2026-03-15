@@ -3,7 +3,7 @@ from typing import Union
 import importlib.metadata
 from apipod import CONSTS
 from apipod.compatibility.HealthCheck import HealthCheck
-from apipod.settings import APIPOD_DEPLOYMENT, APIPOD_PORT
+from apipod.settings import APIPOD_PORT
 
 
 class _SocaityRouter:
@@ -53,7 +53,7 @@ class _SocaityRouter:
         raise NotImplementedError("Implement in subclass")
 
     @abstractmethod
-    def start(self, deployment: Union[CONSTS.APIPOD_DEPLOYMENT, str] = APIPOD_DEPLOYMENT, port: int = APIPOD_PORT, *args, **kwargs):
+    def start(self, port: int = APIPOD_PORT, *args, **kwargs):
         raise NotImplementedError("Implement in subclass")
 
     def endpoint(self, path: str = None, *args, **kwargs):

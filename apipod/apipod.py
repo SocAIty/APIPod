@@ -1,121 +1,138 @@
 from apipod import CONSTS
-from apipod.settings import APIPOD_BACKEND, APIPOD_DEPLOYMENT, APIPOD_QUEUE_BACKEND
+from apipod.settings import APIPOD_ORCHESTRATOR, APIPOD_COMPUTE, APIPOD_PROVIDER
 from apipod.core.routers._socaity_router import _SocaityRouter
 from apipod.core.routers._runpod_router import SocaityRunpodRouter
 from apipod.core.routers._fastapi_router import SocaityFastAPIRouter
 from apipod.core.job_queues.job_queue_interface import JobQueueInterface
 
 from typing import Union
-import os
 
 
 def APIPod(
-        backend: Union[CONSTS.APIPOD_BACKEND, str, object] = APIPOD_BACKEND,
-        deployment: Union[CONSTS.APIPOD_DEPLOYMENT, str] = APIPOD_DEPLOYMENT,
-        queue_backend: Union[CONSTS.APIPOD_QUEUE_BACKEND, str] = APIPOD_QUEUE_BACKEND,
-        redis_url: str = None,
+        orchestrator: Union[CONSTS.ORCHESTRATOR, str, None] = None,
+        compute: Union[CONSTS.COMPUTE, str, None] = None,
+        provider: Union[CONSTS.PROVIDER, str, None] = None,
         *args, **kwargs
 ) -> Union[_SocaityRouter, SocaityRunpodRouter, SocaityFastAPIRouter]:
     """
-    Initialize a _SocaityRouter with the appropriate backend running in the specified environment
-    This function is a factory function that returns the appropriate app based on the backend and environment
+    Initialize an APIPod router with the appropriate backend based on the deployment configuration.
+
+    The resulting backend is determined by the combination of orchestrator, compute, and provider:
+
+    | Orchestrator | Compute    | Provider  | Backend                    |
+    |------------- |----------- |---------- |--------------------------- |
+    | socaity      | dedicated  | auto      | FastAPI                    |
+    | socaity      | dedicated  | localhost | FastAPI + job queue (test) |
+    | socaity      | dedicated  | runpod    | Celery (planned)           |
+    | socaity      | dedicated  | scaleway  | Celery (planned)           |
+    | socaity      | dedicated  | azure     | Celery (planned)           |
+    | socaity      | serverless | auto      | RunPod router              |
+    | socaity      | serverless | localhost | FastAPI + job queue (test) |
+    | socaity      | serverless | runpod    | RunPod router              |
+    | socaity      | serverless | scaleway  | Not supported              |
+    | socaity      | serverless | azure     | Not supported              |
+    | local/None   | dedicated  | *         | FastAPI                    |
+    | local/None   | serverless | localhost | FastAPI + job queue        |
+    | local/None   | serverless | runpod    | RunPod router              |
+    | local/None   | serverless | scaleway  | Not supported              |
+    | local/None   | serverless | azure     | Not supported              |
+
     Args:
-        backend: fastapi, runpod
-        deployment: localhost, serverless
-        queue_backend: "local" or "redis". Default is None (no queue).
-        redis_url: URL for redis if queue_backend is redis. Defaults to env APIPOD_REDIS_URL
-        host: The host to run the uvicorn host on.
-        port: The port to run the uvicorn host on.
-        *args:
-        **kwargs:
-
-    Returns: _SocaityRouter
+        orchestrator: "socaity" or "local" (default from env / local).
+        compute: "dedicated" or "serverless" (default from env / dedicated).
+        provider: "auto", "localhost", "runpod", "scaleway", "azure" (default from env / localhost).
     """
+    orchestrator = _resolve_enum(orchestrator, CONSTS.ORCHESTRATOR, APIPOD_ORCHESTRATOR, CONSTS.ORCHESTRATOR.LOCAL)
+    compute = _resolve_enum(compute, CONSTS.COMPUTE, APIPOD_COMPUTE, CONSTS.COMPUTE.DEDICATED)
+    provider = _resolve_enum(provider, CONSTS.PROVIDER, APIPOD_PROVIDER, CONSTS.PROVIDER.LOCALHOST)
 
-    backend_class = _get_backend_class(backend)
-    job_queue = _get_queue_backend(queue_backend, backend_class, redis_url)
+    backend_class, use_job_queue = _resolve_backend(orchestrator, compute, provider)
 
-    deployment = _get_deployment_type(deployment)
+    job_queue = _create_job_queue() if use_job_queue else None
 
     if backend_class == SocaityFastAPIRouter:
-        backend_instance = backend_class(deployment=deployment, job_queue=job_queue, *args, **kwargs)
+        return backend_class(job_queue=job_queue, *args, **kwargs)
     else:
-        backend_instance = backend_class(deployment=deployment, *args, **kwargs)
-
-    return backend_instance
+        return backend_class(*args, **kwargs)
 
 
-def _get_backend_class(backend: Union[CONSTS.APIPOD_BACKEND, str, object]) -> type:
-    if backend is None:
-        backend = APIPOD_BACKEND
-
-    if isinstance(backend, str):
-        backend = CONSTS.APIPOD_BACKEND(backend)
-
-    backend_class = SocaityFastAPIRouter
-    if isinstance(backend, CONSTS.APIPOD_BACKEND):
-        class_map = {
-            CONSTS.APIPOD_BACKEND.FASTAPI: SocaityFastAPIRouter,
-            CONSTS.APIPOD_BACKEND.RUNPOD: SocaityRunpodRouter
-        }
-        if backend not in class_map:
-            raise Exception(f"Backend {backend.value} not found")
-        backend_class = class_map[backend]
-    if type(backend) in [SocaityFastAPIRouter, SocaityRunpodRouter]:
-        backend_class = backend
-
-    return backend_class
-
-
-def _get_deployment_type(deployment: Union[CONSTS.APIPOD_DEPLOYMENT, str]):
-    if deployment is None:
-        deployment = CONSTS.APIPOD_DEPLOYMENT.LOCALHOST
-    deployment = CONSTS.APIPOD_DEPLOYMENT(deployment) if type(deployment) is str else deployment
-    return deployment
-
-
-def _get_queue_backend(queue_backend: str, backend_class: type, redis_url: str = None) -> JobQueueInterface:
-    """
-    Get the job queue backend for the given backend class and queue backend
-    """
-    if backend_class == SocaityRunpodRouter and queue_backend == CONSTS.APIPOD_QUEUE_BACKEND.REDIS:
-        print("Runpod router does not support redis queue. Will use runpod platform mechanism instead.")
-        return None
-
-    # Determine Queue Backend
-    if queue_backend is None:
-        # Check env if passed param is None, but the param default comes from settings which reads env.
-        # If settings is None, then it is None.
-        pass
-
-    # If explicitly None, return None (No queue)
-    if not queue_backend:
-        return None
-
-    # Handle string input
-    if isinstance(queue_backend, str):
+def _resolve_enum(value, enum_cls, env_default, fallback):
+    """Coerce a value into an enum member, falling back through env default and hard default."""
+    if value is None:
+        value = env_default
+    if isinstance(value, str):
         try:
-            queue_backend = CONSTS.APIPOD_QUEUE_BACKEND(queue_backend)
+            return enum_cls(value)
         except ValueError:
-            # Fallback or error?
-            pass
+            raise ValueError(f"Invalid {enum_cls.__name__} value: '{value}'. Choose from: {[e.value for e in enum_cls]}")
+    if isinstance(value, enum_cls):
+        return value
+    return fallback
 
-    job_queue = None
-    if queue_backend == CONSTS.APIPOD_QUEUE_BACKEND.REDIS:
-        if redis_url is None:
-            redis_url = os.environ.get("APIPOD_REDIS_URL")
-        if not redis_url:
-            raise ValueError("redis_url must be provided or set in APIPOD_REDIS_URL env var when using redis queue")
-        print(f"Initializing Redis Job Queue with URL: {redis_url}")
 
-        from apipod.core.job_queues.redis_job_queue import RedisJobQueue
-        job_queue = RedisJobQueue(redis_url=redis_url)
-    elif queue_backend == CONSTS.APIPOD_QUEUE_BACKEND.LOCAL:
-        # Default to local
-        from apipod.core.job_queues.job_queue import JobQueue
-        job_queue = JobQueue()
-    else:
-        # Unknown or None
-        return None
+def _resolve_backend(
+    orchestrator: CONSTS.ORCHESTRATOR,
+    compute: CONSTS.COMPUTE,
+    provider: CONSTS.PROVIDER,
+) -> tuple:
+    """
+    Apply the configuration matrix and return (backend_class, use_job_queue).
+    Raises for unsupported or not-yet-implemented combinations.
+    """
+    _raise_if_unsupported(compute, provider)
 
-    return job_queue
+    if orchestrator == CONSTS.ORCHESTRATOR.SOCAITY:
+        return _resolve_socaity(compute, provider)
+
+    return _resolve_local(compute, provider)
+
+
+def _raise_if_unsupported(compute: CONSTS.COMPUTE, provider: CONSTS.PROVIDER):
+    unsupported = {
+        (CONSTS.COMPUTE.SERVERLESS, CONSTS.PROVIDER.SCALEWAY),
+        (CONSTS.COMPUTE.SERVERLESS, CONSTS.PROVIDER.AZURE),
+    }
+    if (compute, provider) in unsupported:
+        raise NotImplementedError(
+            f"Serverless compute on {provider.value} is not supported. "
+            f"Use provider='runpod' for serverless or switch to dedicated compute."
+        )
+
+
+def _resolve_socaity(compute: CONSTS.COMPUTE, provider: CONSTS.PROVIDER) -> tuple:
+    if compute == CONSTS.COMPUTE.DEDICATED:
+        if provider in (CONSTS.PROVIDER.RUNPOD, CONSTS.PROVIDER.SCALEWAY, CONSTS.PROVIDER.AZURE):
+            raise NotImplementedError(
+                f"Celery backend for socaity + dedicated + {provider.value} is planned but not yet available."
+            )
+        if provider == CONSTS.PROVIDER.LOCALHOST:
+            return SocaityFastAPIRouter, True
+        # auto or any other -> FastAPI without queue
+        return SocaityFastAPIRouter, False
+
+    # serverless
+    if provider == CONSTS.PROVIDER.LOCALHOST:
+        return SocaityFastAPIRouter, True
+    # auto or runpod -> RunPod router
+    return SocaityRunpodRouter, False
+
+
+def _resolve_local(compute: CONSTS.COMPUTE, provider: CONSTS.PROVIDER) -> tuple:
+    if compute == CONSTS.COMPUTE.DEDICATED:
+        return SocaityFastAPIRouter, False
+
+    # serverless
+    if provider == CONSTS.PROVIDER.LOCALHOST:
+        return SocaityFastAPIRouter, True
+    if provider == CONSTS.PROVIDER.RUNPOD:
+        return SocaityRunpodRouter, False
+    # auto -> RunPod router (same default as socaity serverless auto)
+    if provider == CONSTS.PROVIDER.AUTO:
+        return SocaityRunpodRouter, False
+
+    raise NotImplementedError(f"Unsupported configuration: local + serverless + {provider.value}")
+
+
+def _create_job_queue() -> JobQueueInterface:
+    from apipod.core.job_queues.job_queue import JobQueue
+    return JobQueue()

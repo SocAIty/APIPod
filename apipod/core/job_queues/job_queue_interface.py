@@ -8,7 +8,7 @@ T = TypeVar('T', bound=BaseJob)
 class JobQueueInterface(Generic[T], ABC):
     """
     Abstract interface for JobQueue implementations.
-    Allows swapping between Local (Thread/Process) and Remote (Redis) backends.
+    Allows swapping between local (Thread/Process) and broker (celery) backends.
     """
 
     @abstractmethod
