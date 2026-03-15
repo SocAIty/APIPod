@@ -1,7 +1,10 @@
 import functools
 import inspect
+import threading
+import logging
 from typing import Union, Callable, get_type_hints, Generator, AsyncGenerator, Iterator, AsyncIterator
 from fastapi import APIRouter, FastAPI, Response
+from fastapi.response import JSONResponse
 
 from apipod.settings import APIPOD_PORT, APIPOD_HOST, SERVER_DOMAIN
 from apipod.CONSTS import SERVER_HEALTH
@@ -69,6 +72,13 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
         self.prefix = prefix
         self.add_standard_routes()
 
+        # Registry for functions that workers can execute. Keys are function names.
+        self._job_func_registry: dict = {}
+        # Stop event and thread handle for in-process worker (dev mode)
+        self._worker_stop_event = threading.Event()
+        self._worker_thread: threading.Thread | None = None
+        self._logger = logging.getLogger(__name__)
+
         # excpetion handling
         _FastAPIExceptionHandler.__init__(self)
         if not getattr(self.app.state, "_socaity_exception_handler_added", False):
@@ -78,6 +88,51 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
         # Save original OpenAPI function and replace it
         self._orig_openapi_func = self.app.openapi
         self.app.openapi = self.custom_openapi
+
+        # Start in-process worker on FastAPI startup (dev convenience).
+        # Only start if a job_queue with `start_worker` exists.
+        if not getattr(self.app.state, "_socaity_worker_hooks_added", False):
+            def _startup():
+                try:
+                    if self.job_queue and hasattr(self.job_queue, "start_worker"):
+                        # Start worker in a daemon thread so it doesn't block uvicorn
+                        def _run():
+                            try:
+                                self.job_queue.start_worker(
+                                    func_registry=self._job_func_registry,
+                                    worker_name="api-worker",
+                                    stop_event=self._worker_stop_event,
+                                )
+                            except Exception:
+                                self._logger.exception("Worker thread exited with exception")
+
+                        t = threading.Thread(target=_run, daemon=True)
+                        t.start()
+                        self._worker_thread = t
+                except Exception:
+                    self._logger.exception("Failed to start in-process worker on startup")
+
+            def _shutdown():
+                try:
+                    # Signal local worker to stop
+                    try:
+                        self._worker_stop_event.set()
+                    except Exception:
+                        pass
+
+                    # Call job_queue.shutdown if available
+                    if self.job_queue and hasattr(self.job_queue, "shutdown"):
+                        try:
+                            self.job_queue.shutdown()
+                        except Exception:
+                            self._logger.exception("Error shutting down job queue")
+                except Exception:
+                    self._logger.exception("Error during worker shutdown handler")
+
+            # Register handlers
+            self.app.add_event_handler("startup", _startup)
+            self.app.add_event_handler("shutdown", _shutdown)
+            self.app.state._socaity_worker_hooks_added = True
 
     def add_standard_routes(self):
         """Add standard API routes for status and health checks."""
@@ -92,7 +147,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
             HTTP response with health status
         """
         stat, message = self._health_check.get_health_response()
-        return Response(status_code=stat, content=message)
+        return JSONResponse(status_code=stat, content=message)
 
     def custom_openapi(self):
         """
@@ -183,6 +238,12 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
             assert res_model is not None
 
             # 3. LLM Endpoint Logic
+            # Register LLM handler in job registry when using queue so workers can find it
+            if should_use_queue:
+                try:
+                    self._job_func_registry[func.__name__] = func
+                except Exception:
+                    pass
             @functools.wraps(func)
             async def _unified_worker(*w_args, **w_kwargs):
                 # Extract the request payload
@@ -200,8 +261,9 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
                     payload=payload
                 )
 
-                clean_kwargs["payload"] = openai_req
-
+                # Do not inject `payload` into clean_kwargs — it is passed
+                # explicitly as `openai_req` to `handle_llm_request` to avoid
+                # duplicate `payload` keywords when calling `_execute_func`.
                 return await self.handle_llm_request(
                     func=func,
                     openai_req=openai_req,
@@ -351,6 +413,11 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
         def decorator(func: Callable) -> Callable:
             # Add job queue functionality and prepare for FastAPI file handling
             queue_decorated = queue_decorator(func)
+            # Register the function so workers can execute it (dev mode).
+            try:
+                self._job_func_registry[func.__name__] = func
+            except Exception:
+                pass
             upload_enabled = self._prepare_func_for_media_file_upload_with_fastapi(queue_decorated, max_upload_file_size_mb)
             return fastapi_route_decorator(upload_enabled)
 
