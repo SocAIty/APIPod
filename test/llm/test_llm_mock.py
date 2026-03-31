@@ -11,7 +11,7 @@ import uuid
 import random
 
 from apipod import APIPod
-from apipod.core.routers import schemas
+from apipod.common import schemas
 from fastapi import FastAPI
 
 # ============================================================================

@@ -4,9 +4,9 @@ from datetime import datetime, timezone
 import time
 from typing import Dict, Optional, TypeVar, Tuple
 
-from apipod.core.job_queues.job_store import JobStore
-from apipod.core.job.base_job import BaseJob, JOB_STATUS
-from apipod.core.job_queues.job_queue_interface import JobQueueInterface
+from apipod.engine.queue.job_store import JobStore
+from apipod.engine.jobs.base_job import BaseJob, JOB_STATUS
+from apipod.engine.queue.job_queue_interface import JobQueueInterface
 import inspect
 
 T = TypeVar('T', bound=BaseJob)

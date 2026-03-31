@@ -3,7 +3,7 @@ from typing import Callable, Type, Any, get_args, get_origin, Union
 import uuid
 from datetime import datetime, timezone
 import inspect
-from apipod.core.routers import schemas
+from apipod.common.schemas import ChatCompletionRequest, ChatCompletionResponse, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse, ChatCompletionChoice, CompletionChoice, EmbeddingData
 
 
 class _BaseLLMMixin:
@@ -13,9 +13,9 @@ class _BaseLLMMixin:
 
     def __init__(self, *args, **kwargs):
         self._llm_configs = {
-            schemas.ChatCompletionRequest: (schemas.ChatCompletionResponse, "chat"),
-            schemas.CompletionRequest: (schemas.CompletionResponse, "completion"),
-            schemas.EmbeddingRequest: (schemas.EmbeddingResponse, "embedding"),
+            ChatCompletionRequest: (ChatCompletionResponse, "chat"),
+            CompletionRequest: (CompletionResponse, "completion"),
+            EmbeddingRequest: (EmbeddingResponse, "embedding"),
         }
         self._supported_llm_request_models = tuple(self._llm_configs.keys())
 
@@ -70,7 +70,7 @@ class _BaseLLMMixin:
                 object="chat.completion",
                 created=ts,
                 model=model_name,
-                choices=[schemas.ChatCompletionChoice(**choice) for choice in result["choices"]],
+                choices=[ChatCompletionChoice(**choice) for choice in result["choices"]],
                 usage=result.get("usage")
             )
         elif endpoint_type == "completion":
@@ -79,13 +79,13 @@ class _BaseLLMMixin:
                 object="text.completion",
                 created=ts,
                 model=model_name,
-                choices=[schemas.CompletionChoice(**choice) for choice in result["choices"]],
+                choices=[CompletionChoice(**choice) for choice in result["choices"]],
                 usage=result.get("usage")
             )
         elif endpoint_type == "embedding":
             return response_model(
                 object="embedding",
-                data=[schemas.EmbeddingData(**data) for data in result["data"]],
+                data=[EmbeddingData(**data) for data in result["data"]],
                 model=model_name,
                 usage=result.get("usage")
             )

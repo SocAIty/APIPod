@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Callable, TypeVar, Generic
-from apipod.core.job.base_job import BaseJob
+from apipod.engine.jobs.base_job import BaseJob
 
 T = TypeVar('T', bound=BaseJob)
 

@@ -1,7 +1,7 @@
 from fastapi.responses import StreamingResponse
 
-from apipod.core.routers.llm.base_mixin import _BaseLLMMixin
-from apipod.settings import SERVER_DOMAIN
+from apipod.engine.llm.base_mixin import _BaseLLMMixin
+from apipod.common.settings import SERVER_DOMAIN
 
 
 class _FastApiLlmMixin(_BaseLLMMixin):
@@ -17,7 +17,7 @@ class _FastApiLlmMixin(_BaseLLMMixin):
             return StreamingResponse(self._stream_generator(result), media_type="text/event-stream")
 
         if should_use_queue:
-            from apipod.core.job.job_result import JobResultFactory
+            from apipod.engine.jobs.job_result import JobResultFactory
 
             job = self.job_queue.add_job(
                 job_function=func,

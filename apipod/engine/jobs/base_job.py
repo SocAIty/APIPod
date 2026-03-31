@@ -3,7 +3,7 @@ from typing import Optional
 from uuid import uuid4
 from enum import Enum
 
-from apipod.core.job.job_progress import JobProgress
+from apipod.engine.jobs.job_progress import JobProgress
 
 
 class JOB_STATUS(Enum):

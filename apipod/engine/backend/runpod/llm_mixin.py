@@ -1,4 +1,5 @@
-from apipod.core.routers.llm.base_mixin import _BaseLLMMixin
+from apipod.engine.llm.base_mixin import _BaseLLMMixin
+
 
 class _RunPodLLMMixin(_BaseLLMMixin):
     """

@@ -1,4 +1,4 @@
-from apipod.CONSTS import SERVER_HEALTH
+from apipod.common.constants import SERVER_HEALTH
 
 import os
 from typing import Dict, Union, Tuple

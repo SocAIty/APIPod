@@ -1,19 +1,19 @@
-from apipod import CONSTS
-from apipod.settings import APIPOD_ORCHESTRATOR, APIPOD_COMPUTE, APIPOD_PROVIDER
-from apipod.core.routers.base_router import _SocaityRouter
-from apipod.core.routers.providers.runpod.router import SocaityRunpodRouter
-from apipod.core.routers.providers.fastapi.router import SocaityFastAPIRouter
-from apipod.core.job_queues.job_queue_interface import JobQueueInterface
+from apipod.common import constants
+from apipod.common.settings import APIPOD_ORCHESTRATOR, APIPOD_COMPUTE, APIPOD_PROVIDER
+from apipod.engine.base_backend import _BaseBackend
+from apipod.engine.backend.runpod.router import SocaityRunpodRouter
+from apipod.engine.backend.fastapi.router import SocaityFastAPIRouter
+from apipod.engine.queue.job_queue_interface import JobQueueInterface
 
 from typing import Union
 
 
 def APIPod(
-        orchestrator: Union[CONSTS.ORCHESTRATOR, str, None] = None,
-        compute: Union[CONSTS.COMPUTE, str, None] = None,
-        provider: Union[CONSTS.PROVIDER, str, None] = None,
+        orchestrator: Union[constants.ORCHESTRATOR, str, None] = None,
+        compute: Union[constants.COMPUTE, str, None] = None,
+        provider: Union[constants.PROVIDER, str, None] = None,
         *args, **kwargs
-) -> Union[_SocaityRouter, SocaityRunpodRouter, SocaityFastAPIRouter]:
+) -> Union[_BaseBackend, SocaityRunpodRouter, SocaityFastAPIRouter]:
     """
     Initialize an APIPod router with the appropriate backend based on the deployment configuration.
 
@@ -42,9 +42,9 @@ def APIPod(
         compute: "dedicated" or "serverless" (default from env / dedicated).
         provider: "auto", "localhost", "runpod", "scaleway", "azure" (default from env / localhost).
     """
-    orchestrator = _resolve_enum(orchestrator, CONSTS.ORCHESTRATOR, APIPOD_ORCHESTRATOR, CONSTS.ORCHESTRATOR.LOCAL)
-    compute = _resolve_enum(compute, CONSTS.COMPUTE, APIPOD_COMPUTE, CONSTS.COMPUTE.DEDICATED)
-    provider = _resolve_enum(provider, CONSTS.PROVIDER, APIPOD_PROVIDER, CONSTS.PROVIDER.LOCALHOST)
+    orchestrator = _resolve_enum(orchestrator, constants.ORCHESTRATOR, APIPOD_ORCHESTRATOR, constants.ORCHESTRATOR.LOCAL)
+    compute = _resolve_enum(compute, constants.COMPUTE, APIPOD_COMPUTE, constants.COMPUTE.DEDICATED)
+    provider = _resolve_enum(provider, constants.PROVIDER, APIPOD_PROVIDER, constants.PROVIDER.LOCALHOST)
 
     backend_class, use_job_queue = _resolve_backend(orchestrator, compute, provider)
 
@@ -71,9 +71,9 @@ def _resolve_enum(value, enum_cls, env_default, fallback):
 
 
 def _resolve_backend(
-    orchestrator: CONSTS.ORCHESTRATOR,
-    compute: CONSTS.COMPUTE,
-    provider: CONSTS.PROVIDER,
+    orchestrator: constants.ORCHESTRATOR,
+    compute: constants.COMPUTE,
+    provider: constants.PROVIDER,
 ) -> tuple:
     """
     Apply the configuration matrix and return (backend_class, use_job_queue).
@@ -81,16 +81,16 @@ def _resolve_backend(
     """
     _raise_if_unsupported(compute, provider)
 
-    if orchestrator == CONSTS.ORCHESTRATOR.SOCAITY:
+    if orchestrator == constants.ORCHESTRATOR.SOCAITY:
         return _resolve_socaity(compute, provider)
 
     return _resolve_local(compute, provider)
 
 
-def _raise_if_unsupported(compute: CONSTS.COMPUTE, provider: CONSTS.PROVIDER):
+def _raise_if_unsupported(compute: constants.COMPUTE, provider: constants.PROVIDER):
     unsupported = {
-        (CONSTS.COMPUTE.SERVERLESS, CONSTS.PROVIDER.SCALEWAY),
-        (CONSTS.COMPUTE.SERVERLESS, CONSTS.PROVIDER.AZURE),
+        (constants.COMPUTE.SERVERLESS, constants.PROVIDER.SCALEWAY),
+        (constants.COMPUTE.SERVERLESS, constants.PROVIDER.AZURE),
     }
     if (compute, provider) in unsupported:
         raise NotImplementedError(
@@ -99,40 +99,40 @@ def _raise_if_unsupported(compute: CONSTS.COMPUTE, provider: CONSTS.PROVIDER):
         )
 
 
-def _resolve_socaity(compute: CONSTS.COMPUTE, provider: CONSTS.PROVIDER) -> tuple:
-    if compute == CONSTS.COMPUTE.DEDICATED:
-        if provider in (CONSTS.PROVIDER.RUNPOD, CONSTS.PROVIDER.SCALEWAY, CONSTS.PROVIDER.AZURE):
+def _resolve_socaity(compute: constants.COMPUTE, provider: constants.PROVIDER) -> tuple:
+    if compute == constants.COMPUTE.DEDICATED:
+        if provider in (constants.PROVIDER.RUNPOD, constants.PROVIDER.SCALEWAY, constants.PROVIDER.AZURE):
             raise NotImplementedError(
                 f"Celery backend for socaity + dedicated + {provider.value} is planned but not yet available."
             )
-        if provider == CONSTS.PROVIDER.LOCALHOST:
+        if provider == constants.PROVIDER.LOCALHOST:
             return SocaityFastAPIRouter, True
         # auto or any other -> FastAPI without queue
         return SocaityFastAPIRouter, False
 
     # serverless
-    if provider == CONSTS.PROVIDER.LOCALHOST:
+    if provider == constants.PROVIDER.LOCALHOST:
         return SocaityFastAPIRouter, True
     # auto or runpod -> RunPod router
     return SocaityRunpodRouter, False
 
 
-def _resolve_local(compute: CONSTS.COMPUTE, provider: CONSTS.PROVIDER) -> tuple:
-    if compute == CONSTS.COMPUTE.DEDICATED:
+def _resolve_local(compute: constants.COMPUTE, provider: constants.PROVIDER) -> tuple:
+    if compute == constants.COMPUTE.DEDICATED:
         return SocaityFastAPIRouter, False
 
     # serverless
-    if provider == CONSTS.PROVIDER.LOCALHOST:
+    if provider == constants.PROVIDER.LOCALHOST:
         return SocaityFastAPIRouter, True
-    if provider == CONSTS.PROVIDER.RUNPOD:
+    if provider == constants.PROVIDER.RUNPOD:
         return SocaityRunpodRouter, False
     # auto -> RunPod router (same default as socaity serverless auto)
-    if provider == CONSTS.PROVIDER.AUTO:
+    if provider == constants.PROVIDER.AUTO:
         return SocaityRunpodRouter, False
 
     raise NotImplementedError(f"Unsupported configuration: local + serverless + {provider.value}")
 
 
 def _create_job_queue() -> JobQueueInterface:
-    from apipod.core.job_queues.job_queue import JobQueue
+    from apipod.engine.queue.job_queue import JobQueue
     return JobQueue()

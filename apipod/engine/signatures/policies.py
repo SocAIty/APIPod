@@ -4,7 +4,7 @@ from typing import Any, Union, get_args, get_origin
 import inspect
 from fastapi import Body, Form
 
-from apipod.core.routers.schemas import SUPPORTED_LLM_REQUEST_SCHEMAS
+from apipod.common.schemas import SUPPORTED_LLM_REQUEST_SCHEMAS
 
 
 class FastAPISignaturePolicies:

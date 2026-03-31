@@ -1,6 +1,6 @@
 import sys
 from os import environ
-from apipod.CONSTS import ORCHESTRATOR, COMPUTE, PROVIDER
+from apipod.common.constants import ORCHESTRATOR, COMPUTE, PROVIDER
 
 APIPOD_ORCHESTRATOR = environ.get("APIPOD_ORCHESTRATOR", ORCHESTRATOR.LOCAL)
 APIPOD_COMPUTE = environ.get("APIPOD_COMPUTE", COMPUTE.DEDICATED)

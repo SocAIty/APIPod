@@ -1,12 +1,12 @@
 from abc import abstractmethod
 from typing import Union
 import importlib.metadata
-from apipod import CONSTS
-from apipod.compatibility.HealthCheck import HealthCheck
-from apipod.settings import APIPOD_PORT
+from apipod.common import constants
+from apipod.engine.compatibility.HealthCheck import HealthCheck
+from apipod.common.settings import APIPOD_PORT
 
 
-class _SocaityRouter:
+class _BaseBackend:
     """
     Base class for all routers.
     """
@@ -24,11 +24,11 @@ class _SocaityRouter:
         self.version = importlib.metadata.version("apipod")
 
     @property
-    def status(self) -> CONSTS.SERVER_HEALTH:
+    def status(self) -> constants.SERVER_HEALTH:
         return self._health_check.status
 
     @status.setter
-    def status(self, value: CONSTS.SERVER_HEALTH):
+    def status(self, value: constants.SERVER_HEALTH):
         self._health_check.status = value
 
     def get_health(self) -> Union[dict, str]:
@@ -69,7 +69,6 @@ class _SocaityRouter:
         :return:
         """
         raise NotImplementedError("Implement in subclass. Use a decorator for that.")
-
 
     def get(self, path: str = None, queue_size: int = 1, *args, **kwargs):
         raise NotImplementedError("Implement in subclass. Consider using add_route instead.")

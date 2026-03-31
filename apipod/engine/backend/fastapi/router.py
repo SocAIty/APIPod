@@ -6,19 +6,19 @@ from typing import Union, Callable, get_type_hints, Generator, AsyncGenerator, I
 from fastapi import APIRouter, FastAPI, Response
 from fastapi.responses import JSONResponse
 
-from apipod.settings import APIPOD_PORT, APIPOD_HOST, SERVER_DOMAIN
-from apipod.CONSTS import SERVER_HEALTH
-from apipod.core.job.job_result import JobResultFactory, JobResult
-from apipod.core.routers.endpoint_config import FastApiEndpointConfigurator, EndpointExecutionPlan
-from apipod.core.routers.base_router import _SocaityRouter
-from apipod.core.routers.mixins.queue_mixin import _QueueMixin
-from apipod.core.routers.providers.fastapi.file_handling_mixin import _fast_api_file_handling_mixin
-from apipod.core.utils import normalize_name
-from apipod.core.routers.providers.fastapi.exception_handling import _FastAPIExceptionHandler
-from apipod.core.routers.providers.fastapi.llm_mixin import _FastApiLlmMixin
+from apipod.common.settings import APIPOD_PORT, APIPOD_HOST, SERVER_DOMAIN
+from apipod.common.constants import SERVER_HEALTH
+from apipod.engine.jobs.job_result import JobResultFactory, JobResult
+from apipod.engine.endpoint_config import FastApiEndpointConfigurator, EndpointExecutionPlan
+from apipod.engine.base_backend import _BaseBackend
+from apipod.engine.queue.queue_mixin import _QueueMixin
+from apipod.engine.backend.fastapi.file_handling_mixin import _fast_api_file_handling_mixin
+from apipod.engine.utils import normalize_name
+from apipod.engine.backend.fastapi.exception_handling import _FastAPIExceptionHandler
+from apipod.engine.backend.fastapi.llm_mixin import _FastApiLlmMixin
 
 
-class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_file_handling_mixin, _FastAPIExceptionHandler, _FastApiLlmMixin):
+class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_handling_mixin, _FastAPIExceptionHandler, _FastApiLlmMixin):
     """
     FastAPI router extension that adds support for task endpoints.
 
@@ -54,7 +54,7 @@ class SocaityFastAPIRouter(APIRouter, _SocaityRouter, _QueueMixin, _fast_api_fil
         api_router_kwargs = {k: kwargs.get(k) for k in api_router_params if k in kwargs}
 
         APIRouter.__init__(self, **api_router_kwargs)
-        _SocaityRouter.__init__(self, title=title, summary=summary, *args, **kwargs)
+        _BaseBackend.__init__(self, title=title, summary=summary, *args, **kwargs)
         _QueueMixin.__init__(self, job_queue=job_queue, *args, **kwargs)
         _fast_api_file_handling_mixin.__init__(self, max_upload_file_size_mb=max_upload_file_size_mb, *args, **kwargs)
         _FastApiLlmMixin.__init__(self)

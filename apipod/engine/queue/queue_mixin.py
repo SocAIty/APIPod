@@ -1,10 +1,10 @@
 import functools
-from typing import Callable, Optional
+from typing import Callable
 
-from apipod.CONSTS import SERVER_HEALTH
-from apipod.core.job_queues.job_queue import JobQueue
-from apipod.core.job.job_result import JobResultFactory, JobResult
-from apipod.settings import SERVER_DOMAIN
+from apipod.common.constants import SERVER_HEALTH
+
+from apipod.engine.jobs.job_result import JobResultFactory, JobResult
+from apipod.common.settings import SERVER_DOMAIN
 
 
 class _QueueMixin:
@@ -23,7 +23,7 @@ class _QueueMixin:
         Use for creating jobs internally without using the task_decorator / job_queue_func decorator.
         """
         if self.job_queue is None:
-             raise ValueError("Job Queue is not initialized. Cannot add job.")
+            raise ValueError("Job Queue is not initialized. Cannot add job.")
 
         # create a job and add to the job queue
         base_job = self.job_queue.add_job(

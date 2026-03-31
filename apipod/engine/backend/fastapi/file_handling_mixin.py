@@ -1,12 +1,12 @@
 import inspect
 from types import UnionType
 from typing import Any, Union, get_args, get_origin, Callable, List, Dict
-from apipod.compatibility.LimitedUploadFile import LimitedUploadFile
-from apipod.compatibility.upload import is_param_media_toolkit_file
-from apipod.core.job.job_result import FileModel, ImageFileModel, AudioFileModel, VideoFileModel
-from apipod.core.routers.signatures.policies import FastAPISignaturePolicies
-from apipod.core.routers.file_handling.base_mixin import _BaseFileHandlingMixin
-from apipod.core.utils import replace_func_signature
+from apipod.engine.backend.fastapi.LimitedUploadFile import LimitedUploadFile
+from apipod.engine.signatures.upload import is_param_media_toolkit_file
+from apipod.engine.jobs.job_result import FileModel, ImageFileModel, AudioFileModel, VideoFileModel
+from apipod.engine.signatures.policies import FastAPISignaturePolicies
+from apipod.engine.files.base_mixin import _BaseFileHandlingMixin
+from apipod.engine.utils import replace_func_signature
 from media_toolkit import MediaList, MediaDict, ImageFile, AudioFile, VideoFile, MediaFile
 import functools
 
@@ -167,7 +167,7 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
 
         fastapi_dependencies_parameters = []
         field_definitions = {}
-        for name, param in sig.parameters.items():     
+        for name, param in sig.parameters.items():
             # Skip FastAPI dependency injections like Depends, Security, Body, Request, Response
             if FastAPISignaturePolicies.is_fastapi_dependency(param):
                 fastapi_dependencies_parameters.append(param)
@@ -249,7 +249,7 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
         Wrap the function to inject a dummy JobProgress instance if the original
         function expects one. This is used for non-queued FastAPI endpoints.
         """
-        from apipod.core.job.job_progress import JobProgress
+        from apipod.engine.jobs.job_progress import JobProgress
         
         sig = inspect.signature(func)
         job_progress_params = [

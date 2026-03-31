@@ -9,7 +9,7 @@ import time
 import json
 
 from apipod import APIPod
-from apipod.core.routers import schemas
+from apipod.common import schemas
 from fastapi import FastAPI, Body
 import uuid
 from threading import Thread

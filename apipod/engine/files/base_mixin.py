@@ -4,9 +4,9 @@ from types import UnionType
 from typing import Any, Union, get_args, get_origin, Callable, List, Type
 
 from media_toolkit import media_from_any, MediaFile, MediaList, MediaDict
-from apipod.compatibility.upload import is_param_media_toolkit_file
-from apipod.core.job.job_result import FileModel
-from apipod.core.routers.exceptions import FileUploadException
+from apipod.engine.signatures.upload import is_param_media_toolkit_file
+from apipod.engine.jobs.job_result import FileModel
+from apipod.common.exceptions import FileUploadException
 
 
 class _BaseFileHandlingMixin:

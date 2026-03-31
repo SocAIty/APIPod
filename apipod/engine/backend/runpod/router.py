@@ -5,19 +5,19 @@ import traceback
 from datetime import datetime, timezone
 from typing import Union, Callable
 
-from apipod import CONSTS
-from apipod.core.job.base_job import JOB_STATUS
-from apipod.core.job.job_progress import JobProgressRunpod, JobProgress
-from apipod.core.job.job_result import JobResultFactory, JobResult
-from apipod.core.routers.base_router import _SocaityRouter
-from apipod.core.routers.file_handling.base_mixin import _BaseFileHandlingMixin
-from apipod.core.routers.providers.runpod.llm_mixin import _RunPodLLMMixin
+from apipod.common import constants
+from apipod.engine.jobs.base_job import JOB_STATUS
+from apipod.engine.jobs.job_progress import JobProgressRunpod, JobProgress
+from apipod.engine.jobs.job_result import JobResultFactory, JobResult
+from apipod.engine.base_backend import _BaseBackend
+from apipod.engine.files.base_mixin import _BaseFileHandlingMixin
+from apipod.engine.backend.runpod.llm_mixin import _RunPodLLMMixin
 
-from apipod.core.utils import normalize_name
-from apipod.settings import APIPOD_PROVIDER, APIPOD_PORT, DEFAULT_DATE_TIME_FORMAT
+from apipod.engine.utils import normalize_name
+from apipod.common.settings import APIPOD_PROVIDER, APIPOD_PORT, DEFAULT_DATE_TIME_FORMAT
 
 
-class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin, _RunPodLLMMixin):
+class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin):
     """
     Adds routing functionality for the runpod serverless framework.
     Provides enhanced file handling and conversion capabilities.
@@ -42,7 +42,7 @@ class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin, _RunPodLLMMixi
 
             @functools.wraps(func)
             def wrapper(*w_args, **w_kwargs):
-                self.status = CONSTS.SERVER_HEALTH.BUSY
+                self.status = constants.SERVER_HEALTH.BUSY
                 
                 try:
                     if req_model:
@@ -68,7 +68,7 @@ class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin, _RunPodLLMMixi
                     # Default execution for standard endpoints
                     return self._execute_sync_or_async(func, w_args, w_kwargs)
                 finally:
-                    self.status = CONSTS.SERVER_HEALTH.RUNNING
+                    self.status = constants.SERVER_HEALTH.RUNNING
 
             self.routes[path] = wrapper
             return wrapper
@@ -338,10 +338,10 @@ class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin, _RunPodLLMMixi
             Function with FastAPI-compatible signature for OpenAPI generation
         """
         # Import FastAPI-specific conversion logic
-        from apipod.core.routers.providers.fastapi.file_handling_mixin import _fast_api_file_handling_mixin
-        from apipod.core.job.job_result import JobResult
+        from apipod.engine.backend.fastapi.file_handling_mixin import _fast_api_file_handling_mixin
+        from apipod.engine.jobs.job_result import JobResult
         import inspect
-        from apipod.core.utils import replace_func_signature
+        from apipod.engine.utils import replace_func_signature
         # Create a temporary instance of the FastAPI mixin to use its conversion methods
         temp_mixin = _fast_api_file_handling_mixin(max_upload_file_size_mb=5)
         # Apply the same preparation logic as FastAPI router
@@ -464,13 +464,13 @@ class SocaityRunpodRouter(_SocaityRouter, _BaseFileHandlingMixin, _RunPodLLMMixi
 
         return schema
 
-    def start(self, port: int = APIPOD_PORT, provider: Union[CONSTS.PROVIDER, str, None] = None, *args, **kwargs):
+    def start(self, port: int = APIPOD_PORT, provider: Union[constants.PROVIDER, str, None] = None, *args, **kwargs):
         if provider is None:
             provider = APIPOD_PROVIDER
         if isinstance(provider, str):
-            provider = CONSTS.PROVIDER(provider)
+            provider = constants.PROVIDER(provider)
 
-        if provider == CONSTS.PROVIDER.LOCALHOST:
+        if provider == constants.PROVIDER.LOCALHOST:
             self.start_runpod_serverless_localhost(port=port)
         else:
             import runpod.serverless

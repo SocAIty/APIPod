@@ -2,7 +2,7 @@ import threading
 from collections import deque
 from typing import Optional, Set, Dict, TypeVar, Generic, List
 
-from apipod.core.job.base_job import BaseJob
+from apipod.engine.jobs.base_job import BaseJob
 
 T = TypeVar('T', bound=BaseJob)
 
