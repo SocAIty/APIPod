@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "APIPod"
-version = "1.0.0"
+version = "1.0.3"
 description="Create web-APIs for long-running tasks"
 requires-python = ">=3.8"
 authors = [
@@ -18,7 +18,7 @@ dependencies = [
     'python-multipart>=0.0.20',
     "media-toolkit>=0.02.22",
     "jinja2",
-    "toml",
+    "toml"
 ]
 
 [project.scripts]
@@ -28,6 +28,7 @@ apipod = "apipod.cli:main"
 runpod = [
     "runpod>=1.7.7"
 ]
+
 
 [project.urls]
 Repository = "https://github.com/SocAIty/apipod"
