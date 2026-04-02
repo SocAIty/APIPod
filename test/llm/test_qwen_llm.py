@@ -9,7 +9,7 @@ import time
 import json
 
 from apipod import APIPod
-from apipod.core.routers import schemas
+from apipod.common import schemas
 from fastapi import FastAPI, Body
 import uuid
 from threading import Thread
@@ -103,12 +103,12 @@ class LocalSmallModel:
         text_prompt = self.tokenizer.apply_chat_template(
             chat, tokenize=False, add_generation_prompt=True
         )
-        
+
         inputs = self.tokenizer(text_prompt, return_tensors="pt").to(self.device)
-        
+
         # skip_prompt=True is critical; otherwise, you'll stream back the user's question
         streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
-        
+
         generation_kwargs = dict(
             **inputs,
             streamer=streamer,
@@ -126,12 +126,12 @@ class LocalSmallModel:
             # Hugging Face streamer often yields empty strings at the start/end
             if new_text:
                 yield new_text
-    
+
     def get_embeddings(self, texts: Union[str, List[str]]) -> List[List[float]]:
         """Batch processing for embeddings"""
         if isinstance(texts, str):
             texts = [texts]
-            
+
         # Batch tokenize
         inputs = self.tokenizer(
             texts, 
@@ -140,7 +140,7 @@ class LocalSmallModel:
             truncation=True, 
             max_length=512
         ).to(self.device)
-        
+
         with torch.no_grad():
             outputs = self.model(**inputs, output_hidden_states=True)
             # Simple Mean Pooling
@@ -156,6 +156,7 @@ class AppState:
     model: LocalSmallModel | None = None
 
 state = AppState()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -216,6 +217,7 @@ def chat_logic(payload: schemas.ChatCompletionRequest):
         )
     )
 
+
 def embeddings_logic(payload: schemas.EmbeddingRequest):
     if state.model is None:
         raise RuntimeError("Model not initialized")
@@ -223,7 +225,7 @@ def embeddings_logic(payload: schemas.EmbeddingRequest):
     texts = [payload.input] if isinstance(payload.input, str) else payload.input
     embeddings_list = state.model.get_embeddings(texts)
     total_tokens = sum(len(state.model.tokenizer.encode(t)) for t in texts)
-    
+
     return schemas.EmbeddingResponse(
         object="list",
         model=payload.model or "Qwen/Qwen2.5-0.5B-Instruct",
@@ -244,14 +246,13 @@ def embeddings_logic(payload: schemas.EmbeddingRequest):
 # ============================================================================
 # API Setup
 # ============================================================================
-
 app = APIPod(
-    backend="runpod",
+    backend="fastapi",
     lifespan=lifespan,
 )
 
-@app.endpoint(path="/chat", use_queue=False)
-def chat_endpoint(payload: schemas.ChatCompletionRequest = Body(...)):
+@app.endpoint(path="/chat")
+def chat_endpoint(payload: schemas.ChatCompletionRequest):
     """Chat completion endpoint with streaming support."""
     if payload.stream:
         def sse_generator():
@@ -305,11 +306,13 @@ def chat_endpoint(payload: schemas.ChatCompletionRequest = Body(...)):
     else:
         return chat_logic(payload)
 
-@app.endpoint(path="/embeddings", use_queue=True)
-def embeddings_endpoint(payload: schemas.EmbeddingRequest = Body(...)):
+
+@app.endpoint(path="/embeddings")
+def embeddings_endpoint(payload: schemas.EmbeddingRequest):
     return embeddings_logic(payload)
 
-@app.endpoint(path="/stream", use_queue=False)
+
+@app.endpoint(path="/stream")
 def stream_endpoint():
     def simple_stream():
         try:
@@ -322,8 +325,9 @@ def stream_endpoint():
             print("Client disconnected")
         except Exception as e:
             yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
-    
+
     return simple_stream()
+
 
 if __name__ == "__main__":
     app.start()

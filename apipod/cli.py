@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from apipod.deploy.deployment_manager import DeploymentManager
-from apipod.CONSTS import ORCHESTRATOR, COMPUTE, PROVIDER
+from apipod.common.constants import ORCHESTRATOR, COMPUTE, PROVIDER
 
 
 def input_yes_no(question: str, default: bool = True) -> bool:
