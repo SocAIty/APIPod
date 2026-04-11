@@ -10,7 +10,7 @@ from apipod.engine.jobs.base_job import JOB_STATUS
 from apipod.engine.jobs.job_progress import JobProgressRunpod, JobProgress
 from apipod.engine.jobs.job_result import JobResultFactory, JobResult
 from apipod.engine.base_backend import _BaseBackend
-from apipod.engine.files.base_mixin import _BaseFileHandlingMixin
+from apipod.engine.files.base_file_mixin import _BaseFileHandlingMixin
 from apipod.engine.backend.runpod.llm_mixin import _RunPodLLMMixin
 
 from apipod.engine.utils import normalize_name

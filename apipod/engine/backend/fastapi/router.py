@@ -140,6 +140,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         """Add standard API routes for status and health checks."""
         if self.job_queue is not None:
             self.api_route(path="/status", methods=["POST"])(self.get_job)
+            self.api_route(path="/stream", methods=["POST"])(self.get_stream)
         self.api_route(path="/health", methods=["GET"])(self.get_health)
 
     def get_health(self) -> Response:
@@ -194,6 +195,15 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             ret_job = JobResultFactory.gzip_job_result(ret_job)
 
         return ret_job
+
+    def get_stream(self, job_id: str, return_format: str = 'json'):
+        if self.job_queue is None:
+            return x
+
+        stream = self.job_queue.stream()
+        while next(stream):
+            yield stream
+
 
     def endpoint(self, path: str, methods: list[str] | None = None, max_upload_file_size_mb: int = None, queue_size: int = 500, use_queue: bool = None, *args, **kwargs):
         """

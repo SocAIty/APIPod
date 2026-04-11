@@ -1,6 +1,6 @@
 from fastapi.responses import StreamingResponse
 
-from apipod.engine.llm.base_mixin import _BaseLLMMixin
+from apipod.engine.llm.base_llm_mixin import _BaseLLMMixin
 from apipod.common.settings import SERVER_DOMAIN
 
 
