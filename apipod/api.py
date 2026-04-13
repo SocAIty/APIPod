@@ -23,6 +23,7 @@ def APIPod(
     |------------- |----------- |---------- |--------------------------- |
     | socaity      | dedicated  | auto      | FastAPI                    |
     | socaity      | dedicated  | localhost | FastAPI + job queue (test) |
+    | socaity      | dedicated  | socaity   | FastAPI + redis (prod)     |
     | socaity      | dedicated  | runpod    | Celery (planned)           |
     | socaity      | dedicated  | scaleway  | Celery (planned)           |
     | socaity      | dedicated  | azure     | Celery (planned)           |
@@ -40,7 +41,7 @@ def APIPod(
     Args:
         orchestrator: "socaity" or "local" (default from env / local).
         compute: "dedicated" or "serverless" (default from env / dedicated).
-        provider: "auto", "localhost", "runpod", "scaleway", "azure" (default from env / localhost).
+        provider: "auto", "localhost", "socaity", "runpod", "scaleway", "azure" (default from env / localhost).
     """
     orchestrator = _resolve_enum(orchestrator, constants.ORCHESTRATOR, APIPOD_ORCHESTRATOR, constants.ORCHESTRATOR.LOCAL)
     compute = _resolve_enum(compute, constants.COMPUTE, APIPOD_COMPUTE, constants.COMPUTE.DEDICATED)
@@ -48,7 +49,12 @@ def APIPod(
 
     backend_class, use_job_queue = _resolve_backend(orchestrator, compute, provider)
 
-    job_queue = _create_job_queue() if use_job_queue else None
+    custom_job_queue = kwargs.pop("job_queue", None)
+    if custom_job_queue:
+        use_job_queue = True
+        job_queue = custom_job_queue
+    else:
+        job_queue = _create_job_queue() if use_job_queue else None
 
     if backend_class == SocaityFastAPIRouter:
         return backend_class(job_queue=job_queue, *args, **kwargs)
@@ -101,6 +107,9 @@ def _raise_if_unsupported(compute: constants.COMPUTE, provider: constants.PROVID
 
 def _resolve_socaity(compute: constants.COMPUTE, provider: constants.PROVIDER) -> tuple:
     if compute == constants.COMPUTE.DEDICATED:
+        if provider == constants.PROVIDER.SOCAITY:
+            return SocaityFastAPIRouter, True
+
         if provider in (constants.PROVIDER.RUNPOD, constants.PROVIDER.SCALEWAY, constants.PROVIDER.AZURE):
             raise NotImplementedError(
                 f"Celery backend for socaity + dedicated + {provider.value} is planned but not yet available."
@@ -135,4 +144,5 @@ def _resolve_local(compute: constants.COMPUTE, provider: constants.PROVIDER) -> 
 
 def _create_job_queue() -> JobQueueInterface:
     from apipod.engine.queue.job_queue import JobQueue
+
     return JobQueue()

@@ -10,7 +10,7 @@ from apipod.engine.jobs.base_job import JOB_STATUS
 from apipod.engine.jobs.job_progress import JobProgressRunpod, JobProgress
 from apipod.engine.jobs.job_result import JobResultFactory, JobResult
 from apipod.engine.base_backend import _BaseBackend
-from apipod.engine.files.base_mixin import _BaseFileHandlingMixin
+from apipod.engine.files.base_file_mixin import _BaseFileHandlingMixin
 from apipod.engine.backend.runpod.llm_mixin import _RunPodLLMMixin
 
 from apipod.engine.utils import normalize_name
@@ -195,7 +195,10 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
 
         # Prepare result tracking
         start_time = datetime.now(timezone.utc)
-        result = JobResult(id=job['id'], execution_started_at=start_time.strftime(DEFAULT_DATE_TIME_FORMAT))
+        result = JobResult(
+            job_id=job["id"],
+            created_at=start_time.strftime(DEFAULT_DATE_TIME_FORMAT),
+        )
 
         try:
             # Execute the function (Sync or Async Handling)
@@ -218,7 +221,7 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
             print(f"Job {job['id']} failed: {str(e)}")
             traceback.print_exc()
         finally:
-            result.execution_finished_at = datetime.now(timezone.utc).strftime(DEFAULT_DATE_TIME_FORMAT)
+            result.updated_at = datetime.now(timezone.utc).strftime(DEFAULT_DATE_TIME_FORMAT)
 
         result = result.model_dump_json()
         return result

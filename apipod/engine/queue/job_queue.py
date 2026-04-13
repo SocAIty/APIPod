@@ -5,7 +5,7 @@ import time
 from typing import Dict, Optional, TypeVar, Tuple
 
 from apipod.engine.queue.job_store import JobStore
-from apipod.engine.jobs.base_job import BaseJob, JOB_STATUS
+from apipod.engine.jobs.base_job import BaseJob, LocalJob, JOB_STATUS
 from apipod.engine.queue.job_queue_interface import JobQueueInterface
 import inspect
 
@@ -56,16 +56,14 @@ class JobQueue(JobQueueInterface[T]):
 
         return True, None
 
-    def add_job(self, job_function: callable, job_params: Optional[dict] = None) -> T:
+    def _add_job(self, job_function: callable, job_params: Optional[dict] = None) -> T:
         job = self._create_job(job_function, job_params)
 
-        # pre add validation
         valid, message = self._validate_job_before_add(job)
         if not valid:
             job.status = JOB_STATUS.FAILED
             job.error = message
             job.job_progress.set_status(1.0, message)
-            # if not added to completed job, some clients fail with job not found on polling.
             self.job_store._add_job(job)
             self._complete_job(job=job, final_state=JOB_STATUS.FAILED)
             return job
@@ -74,13 +72,11 @@ class JobQueue(JobQueueInterface[T]):
         job.queued_at = datetime.now(timezone.utc)
         self.job_store.add_to_queue(job)
 
-        # Check if worker thread is alive, if not create and start a new one
         if not self.worker_thread.is_alive():
-            # Join the dead thread to ensure proper cleanup before creating new one
             try:
                 self.worker_thread.join(timeout=0.1)
             except Exception:
-                pass  # Ignore join errors for dead threads
+                pass
             self.worker_thread = threading.Thread(target=self._process_jobs_in_background, daemon=True)
             self.worker_thread.start()
 
@@ -88,7 +84,7 @@ class JobQueue(JobQueueInterface[T]):
 
     def _create_job(self, job_function: callable, job_params: Optional[dict] = None) -> T:
         """Override this method in subclasses to create specific job types"""
-        return BaseJob(job_function=job_function, job_params=job_params)
+        return LocalJob(job_function=job_function, job_params=job_params)
 
     def _process_job(self, job: T) -> None:
         try:

@@ -1,7 +1,6 @@
 from fastapi.responses import StreamingResponse
 
-from apipod.engine.llm.base_mixin import _BaseLLMMixin
-from apipod.common.settings import SERVER_DOMAIN
+from apipod.engine.llm.base_llm_mixin import _BaseLLMMixin
 
 
 class _FastApiLlmMixin(_BaseLLMMixin):
@@ -24,7 +23,6 @@ class _FastApiLlmMixin(_BaseLLMMixin):
                 job_params={"payload": openai_req.dict()}
             )
             ret_job = JobResultFactory.from_base_job(job)
-            ret_job.refresh_job_url = f"{SERVER_DOMAIN}/status?job_id={ret_job.id}"
             return ret_job
 
         raw_res = await self._execute_func(func, payload=openai_req, **kwargs)

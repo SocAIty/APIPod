@@ -1,6 +1,7 @@
 from apipod.api import APIPod
+from apipod.engine.jobs.base_job import BaseJob, LocalJob
 from apipod.engine.jobs.job_progress import JobProgress
-from apipod.engine.jobs.job_result import FileModel, JobResult
+from apipod.engine.jobs.job_result import FileModel, JobLinks, JobMetrics, JobResult
 from media_toolkit import MediaFile, ImageFile, AudioFile, VideoFile, MediaList, MediaDict
 from apipod.common import constants
 
@@ -15,4 +16,20 @@ try:
 except Exception:
     __version__ = "0.0.0"
 
-__all__ = ["APIPod", "JobProgress", "FileModel", "JobResult", "MediaFile", "ImageFile", "AudioFile", "VideoFile", "MediaList", "MediaDict", "constants"]
+__all__ = [
+    "APIPod",
+    "BaseJob",
+    "LocalJob",
+    "JobProgress",
+    "FileModel",
+    "JobLinks",
+    "JobMetrics",
+    "JobResult",
+    "MediaFile",
+    "ImageFile",
+    "AudioFile",
+    "VideoFile",
+    "MediaList",
+    "MediaDict",
+    "constants",
+]
