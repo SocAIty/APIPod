@@ -10,7 +10,7 @@ import json
 
 from apipod import APIPod
 from apipod.common import schemas
-from fastapi import FastAPI, Body
+from fastapi import FastAPI
 import uuid
 from threading import Thread
 import torch

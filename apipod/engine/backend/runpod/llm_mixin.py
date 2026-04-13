@@ -1,4 +1,4 @@
-from apipod.engine.llm.base_mixin import _BaseLLMMixin
+from apipod.engine.llm.base_llm_mixin import _BaseLLMMixin
 
 
 class _RunPodLLMMixin(_BaseLLMMixin):
