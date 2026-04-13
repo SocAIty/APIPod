@@ -4,10 +4,11 @@ import threading
 import logging
 from contextlib import asynccontextmanager
 from typing import Union, Callable, get_type_hints, Generator, AsyncGenerator, Iterator, AsyncIterator
-from fastapi import APIRouter, FastAPI, Response
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, FastAPI, Request, Response, status
+from fastapi.exceptions import HTTPException
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from apipod.common.settings import APIPOD_PORT, APIPOD_HOST, SERVER_DOMAIN
+from apipod.common.settings import APIPOD_PORT, APIPOD_HOST
 from apipod.common.constants import SERVER_HEALTH
 from apipod.engine.jobs.job_result import JobResultFactory, JobResult
 from apipod.engine.endpoint_config import FastApiEndpointConfigurator, EndpointExecutionPlan
@@ -50,10 +51,14 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             job_queue: Optional custom JobQueue implementation
             lifespan: Optional async context manager for custom startup/shutdown logic
             args: Additional arguments
-            kwargs: Additional keyword arguments
+            kwargs: May include ``stream_store`` (SSE backend for GET /stream/{job_id}) and
+                ``gateway_stream_url_prefix`` for absolute stream URLs in JobResult, plus
+                additional keyword arguments for parent classes.
         """
         # Extract user-provided lifespan (explicit param or kwarg) before parent init
         user_lifespan = lifespan or kwargs.pop('lifespan', None)
+        stream_store = kwargs.pop("stream_store", None)
+        gateway_stream_url_prefix = kwargs.pop("gateway_stream_url_prefix", "")
 
         # Initialize parent classes
         api_router_params = inspect.signature(APIRouter.__init__).parameters
@@ -92,6 +97,8 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
 
         self.app: FastAPI = app
         self.prefix = prefix
+        self.stream_store = stream_store
+        self.gateway_stream_url_prefix = gateway_stream_url_prefix
         self.add_standard_routes()
 
         self._endpoint_configurator = FastApiEndpointConfigurator(self)
@@ -173,8 +180,11 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
     def add_standard_routes(self):
         """Add standard API routes for status and health checks."""
         if self.job_queue is not None:
-            self.api_route(path="/status", methods=["POST"])(self.get_job)
-            self.api_route(path="/stream", methods=["POST"])(self.get_stream)
+            self.api_route(path="/status/{job_id}", methods=["GET"], response_model_exclude_none=True)(self.get_job)
+            self.api_route(path="/status", methods=["POST"], response_model_exclude_none=True)(self.get_job)
+            self.api_route(path="/cancel/{job_id}", methods=["POST"])(self.post_cancel_job)
+            if self.stream_store is not None:
+                self.api_route(path="/stream/{job_id}", methods=["GET"])(self.stream_job_sse)
         self.api_route(path="/health", methods=["GET"])(self.get_health)
 
     def get_health(self) -> Response:
@@ -217,26 +227,74 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         if self.job_queue is None:
             return JobResultFactory.job_not_found(job_id)
 
-        base_job = self.job_queue.get_job(job_id)
-        if base_job is None:
+        ret_job = self.job_queue.get_job_result(job_id)
+        if ret_job is None:
             return JobResultFactory.job_not_found(job_id)
-
-        ret_job = JobResultFactory.from_base_job(base_job)
-        ret_job.refresh_job_url = f"{SERVER_DOMAIN}/status?job_id={ret_job.id}"
-        ret_job.cancel_job_url = f"{SERVER_DOMAIN}/cancel?job_id={ret_job.id}"
 
         if return_format != 'json':
             ret_job = JobResultFactory.gzip_job_result(ret_job)
 
         return ret_job
 
-    def get_stream(self, job_id: str, return_format: str = 'json'):
+    def post_cancel_job(self, job_id: str) -> dict:
+        """Cancel a background job (gateway / orchestrator integration)."""
+        job_id = job_id.strip().strip('"').strip("'").strip("?").strip("#")
         if self.job_queue is None:
-            return x
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Job queue not configured.")
 
-        stream = self.job_queue.stream()
-        while next(stream):
-            yield stream
+        cancel_fn = getattr(self.job_queue, "cancel_gateway_job", None)
+        if callable(cancel_fn):
+            return cancel_fn(job_id)
+
+        try:
+            self.job_queue.cancel_job(job_id)
+        except NotImplementedError:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail="Cancellation is not supported for this job queue.",
+            ) from None
+        return {"id": job_id, "status": "cancelled", "message": "Job cancelled."}
+
+    async def stream_job_sse(self, job_id: str, request: Request):
+        """Server-Sent Events for streaming job output (requires stream_store)."""
+        job_id = job_id.strip().strip('"').strip("'").strip("?").strip("#")
+        if self.stream_store is None:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Streaming not configured.")
+        if self.job_queue is None:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Job queue not configured.")
+
+        jq = self.job_queue
+        job_data = jq.get_job_status(job_id) if hasattr(jq, "get_job_status") else None
+
+        if job_data is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job '{job_id}' not found.")
+
+        st = (job_data.get("status") or "").lower()
+        if st != "streaming" and not self.stream_store.stream_exists(job_id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Job '{job_id}' is not streaming (status: {job_data.get('status')}).",
+            )
+
+        async def _event_generator():
+            try:
+                async for chunk in self.stream_store.read_chunks(job_id):
+                    if await request.is_disconnected():
+                        break
+                    yield chunk
+            except Exception:
+                self._logger.exception("Error during stream delivery | job_id=%s", job_id)
+                yield 'data: {"error": "Internal stream error"}\n\n'
+
+        return StreamingResponse(
+            _event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
 
     def endpoint(self, path: str, methods: list[str] | None = None, max_upload_file_size_mb: int = None, queue_size: int = 500, use_queue: bool = None, *args, **kwargs):
@@ -366,12 +424,16 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             plan.max_upload_file_size_mb
         )
 
+        route_kwargs = dict(plan.route_kwargs)
+        if plan.should_use_queue:
+            route_kwargs["response_model_exclude_none"] = True
+
         self.api_route(
             path=plan.path,
             methods=plan.active_methods,
             response_model=JobResult if plan.should_use_queue else res_model,
             *plan.route_args,
-            **plan.route_kwargs
+            **route_kwargs
         )(final_handler)
 
         return final_handler
@@ -482,12 +544,14 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
     def _create_task_endpoint_decorator(self, path: str, methods: list[str] | None, max_upload_file_size_mb: int, queue_size: int, args, kwargs):
         """Create a decorator for task endpoints (background job execution)."""
         # FastAPI route decorator (returning JobResult)
+        task_kwargs = dict(kwargs)
+        task_kwargs["response_model_exclude_none"] = True
         fastapi_route_decorator = self.api_route(
             path=path,
             methods=["POST"] if methods is None else methods,
             response_model=JobResult,
             *args,
-            **kwargs
+            **task_kwargs
         )
 
         # Queue decorator

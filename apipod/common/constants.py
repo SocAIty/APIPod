@@ -14,6 +14,7 @@ class COMPUTE(Enum):
 class PROVIDER(Enum):
     AUTO = "auto"
     LOCALHOST = "localhost"
+    SOCAITY = "socaity"
     RUNPOD = "runpod"
     SCALEWAY = "scaleway"
     AZURE = "azure"

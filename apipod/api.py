@@ -41,7 +41,7 @@ def APIPod(
     Args:
         orchestrator: "socaity" or "local" (default from env / local).
         compute: "dedicated" or "serverless" (default from env / dedicated).
-        provider: "auto", "localhost", "runpod", "scaleway", "azure" (default from env / localhost).
+        provider: "auto", "localhost", "socaity", "runpod", "scaleway", "azure" (default from env / localhost).
     """
     orchestrator = _resolve_enum(orchestrator, constants.ORCHESTRATOR, APIPOD_ORCHESTRATOR, constants.ORCHESTRATOR.LOCAL)
     compute = _resolve_enum(compute, constants.COMPUTE, APIPOD_COMPUTE, constants.COMPUTE.DEDICATED)
@@ -49,7 +49,7 @@ def APIPod(
 
     backend_class, use_job_queue = _resolve_backend(orchestrator, compute, provider)
 
-    custom_job_queue = kwargs.get('job_queue')
+    custom_job_queue = kwargs.pop("job_queue", None)
     if custom_job_queue:
         use_job_queue = True
         job_queue = custom_job_queue
@@ -142,7 +142,7 @@ def _resolve_local(compute: constants.COMPUTE, provider: constants.PROVIDER) -> 
     raise NotImplementedError(f"Unsupported configuration: local + serverless + {provider.value}")
 
 
-def _create_job_queue(provider: constants.PROVIDER) -> JobQueueInterface:
+def _create_job_queue() -> JobQueueInterface:
     from apipod.engine.queue.job_queue import JobQueue
 
     return JobQueue()

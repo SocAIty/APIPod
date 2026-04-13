@@ -1,12 +1,12 @@
 import gzip
 from io import BytesIO
-from typing import Optional, Union, List, Any
+from typing import Any, List, Optional, Union
 
 from pydantic import BaseModel, AnyUrl
 
-from apipod.engine.signatures.upload import is_param_media_toolkit_file
-from apipod.engine.jobs.base_job import JOB_STATUS, BaseJob
 from apipod.common.settings import DEFAULT_DATE_TIME_FORMAT
+from apipod.engine.jobs.base_job import JOB_STATUS, BaseJob
+from apipod.engine.signatures.upload import is_param_media_toolkit_file
 from media_toolkit import IMediaContainer
 from media_toolkit.utils.data_type_utils import is_file_model_dict
 
@@ -23,7 +23,7 @@ class FileModel(BaseModel):
             "example": {
                 "file_name": "example.csv",
                 "content_type": "text/csv",
-                "content": "https://example.com/example.csv"   # bytes, base64 encoded or url
+                "content": "https://example.com/example.csv",
             }
         }
 
@@ -35,7 +35,7 @@ class ImageFileModel(FileModel):
             "example": {
                 "file_name": "example.png",
                 "content_type": "image/png",
-                "content": "base64 encoded image data"
+                "content": "base64 encoded image data",
             }
         }
 
@@ -47,7 +47,7 @@ class AudioFileModel(FileModel):
             "example": {
                 "file_name": "example.mp3",
                 "content_type": "audio/mpeg",
-                "content": "base64 encoded audio data"
+                "content": "base64 encoded audio data",
             }
         }
 
@@ -59,42 +59,140 @@ class VideoFileModel(FileModel):
             "example": {
                 "file_name": "example.mp4",
                 "content_type": "video/mp4",
-                "content": "base64 encoded video data"
+                "content": "base64 encoded video data",
             }
         }
 
 
-class JobProgress(BaseModel):
-    progress: float = 0.0
-    message: Optional[str] = None
+def _job_status_to_public(status: Any) -> Optional[str]:
+    """Map internal JOB_STATUS (or legacy string) to public API strings (gateway-aligned)."""
+    if status is None:
+        return None
+    if isinstance(status, JOB_STATUS):
+        return {
+            JOB_STATUS.QUEUED: "pending",
+            JOB_STATUS.PROCESSING: "processing",
+            JOB_STATUS.FINISHED: "completed",
+            JOB_STATUS.FAILED: "failed",
+            JOB_STATUS.TIMEOUT: "failed",
+        }.get(status, status.value.lower())
+    if isinstance(status, str):
+        lowered = status.lower()
+        legacy = {
+            "queued": "pending",
+            "pending": "pending",
+            "processing": "processing",
+            "finished": "completed",
+            "completed": "completed",
+            "failed": "failed",
+            "timeout": "failed",
+            "rejected": "failed",
+        }
+        return legacy.get(lowered, lowered)
+    return str(status)
+
+
+def _format_date(date: Any) -> Optional[str]:
+    """Format a datetime or ISO string for the public API."""
+    if date is None:
+        return None
+    if isinstance(date, str):
+        return date
+    try:
+        return date.strftime(DEFAULT_DATE_TIME_FORMAT)
+    except Exception:
+        return str(date)
+
+
+def _parse_iso(value: Any):
+    """Best-effort parse an ISO 8601 string or datetime into a datetime."""
+    if value is None:
+        return None
+    if hasattr(value, "timestamp"):
+        return value
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(str(value))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
+def _compute_duration_s(start: Any, end: Any) -> Optional[float]:
+    """Compute seconds between two timestamps, returning None if either is missing."""
+    s, e = _parse_iso(start), _parse_iso(end)
+    if s is None or e is None:
+        return None
+    delta = (e - s).total_seconds()
+    return round(delta, 2) if delta >= 0 else None
+
+
+def _opt_float(value: Any) -> Optional[float]:
+    """Coerce to positive float, else None."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+        return round(f, 3) if f > 0 else None
+    except (ValueError, TypeError):
+        return None
+
+
+class JobLinks(BaseModel):
+    """Hypermedia links for job status polling, cancellation, and streaming."""
+
+    status: Optional[str] = None
+    cancel: Optional[str] = None
+    stream: Optional[str] = None
+
+
+class JobMetrics(BaseModel):
+    """Performance metrics populated as a job progresses through the platform.
+
+    Segments (chronological):
+        upload_time_s          – file upload duration (gateway)
+        platform_queue_time_s  – our validation + dispatch + Celery routing
+        provider_queue_time_s  – provider-side GPU / resource wait
+        inference_time_s       – actual model execution
+        execution_time_s       – orchestrator end-to-end (queue + inference, excludes upload)
+    """
+
+    execution_time_s: Optional[float] = None
+    inference_time_s: Optional[float] = None
+    platform_queue_time_s: Optional[float] = None
+    provider_queue_time_s: Optional[float] = None
+    upload_time_s: Optional[float] = None
 
 
 class JobResult(BaseModel):
+    """Public job snapshot returned by GET /status and job submissions.
+
+    Unified response: same shape whether the client just submitted a job
+    (``status="pending"``) or is polling for completion.
+
+    Null fields are excluded from the serialized response so the client
+    only receives relevant information for the current job state.
     """
-    When the user (client) sends a request to an Endpoint, a ClientJob is created.
-    This job contains the information about the request and the response.
-    """
-    id: str
+
+    job_id: str
     status: Optional[str] = None
-    progress: Optional[JobProgress] = None
+    result: Union[FileModel, List[FileModel], list, str, Any, None] = None
     error: Optional[str] = None
-    result: Union[FileModel, List[FileModel], List, str, Any, None] = None
-    refresh_job_url: Optional[str] = None
-    cancel_job_url: Optional[str] = None
+    progress: Optional[float] = None
+    message: Optional[str] = None
 
-    created_at: Optional[str] = None
-    queued_at: Optional[str] = None
-    execution_started_at: Optional[str] = None
-    execution_finished_at: Optional[str] = None
+    service: Optional[str] = None
+    endpoint: Optional[str] = None
 
-    endpoint_protocol: Optional[str] = "socaity"
+    metrics: Optional[JobMetrics] = None
+    links: Optional[JobLinks] = None
 
 
 class JobResultFactory:
-
     @staticmethod
-    def _serialize_result(data: Any) -> Union[FileModel, List[FileModel], List, str, None]:
-        # Handle single MediaList or MediaFile
+    def _serialize_result(data: Any) -> Union[FileModel, List[FileModel], list, str, None]:
         if isinstance(data, IMediaContainer):
             return data.to_json()
 
@@ -105,68 +203,113 @@ class JobResultFactory:
             return data
 
         if is_file_model_dict(data):
-            return FileModel(**data)
+            try:
+                return FileModel(**data)
+            except Exception:
+                pass
 
-        # Handle list of MediaLists/MediaFiles/other items
         if isinstance(data, list):
             return [JobResultFactory._serialize_result(item) for item in data]
 
         if isinstance(data, dict):
-            return {key: JobResultFactory._serialize_result(value) for key, value in data.items()}
+            return {
+                key: JobResultFactory._serialize_result(value)
+                for key, value in data.items()
+            }
 
         return data
 
     @staticmethod
-    def from_base_job(ij: BaseJob) -> JobResult:
-        def format_date(date):
-            return date.strftime(DEFAULT_DATE_TIME_FORMAT) if date else None
+    def from_base_job(job: BaseJob) -> JobResult:
+        """Map any :class:`BaseJob` subclass to the public :class:`JobResult`.
 
-        created_at = format_date(ij.created_at)
-        queued_at = format_date(ij.queued_at)
-        execution_started_at = format_date(ij.execution_started_at)
-        execution_finished_at = format_date(ij.execution_finished_at)
+        Works for :class:`~apipod.engine.jobs.base_job.LocalJob` (thread queue)
+        and any platform ``BaseJob`` subclass (e.g. gateway ``ServiceJob``).
+        """
+        status = _job_status_to_public(job.status)
+        result = JobResultFactory._serialize_result(job.result)
 
-        # if the internal job returned a media-toolkit file, convert it to a json serializable FileModel
-        result = ij.result
-        result = JobResultFactory._serialize_result(result)
+        progress = job.progress
+        message = job.message
 
-        # Job_status is an Enum, convert it to a string to return it as json
-        status = ij.status
-        if isinstance(status, JOB_STATUS):
-            status = status.value
+        job_progress = getattr(job, "job_progress", None)
+        if job_progress is not None:
+            try:
+                progress = float(job_progress._progress)
+                message = job_progress._message
+            except Exception:
+                pass
 
-        try:
-            jp = JobProgress(progress=ij.job_progress._progress, message=ij.job_progress._message)
-        except Exception:
-            jp = JobProgress(progress=0.0, message='')
+        service = getattr(job, "service_id", None)
+        endpoint = getattr(job, "endpoint", None)
+
+        metrics = JobResultFactory._build_metrics(job)
+
+        links = JobLinks(
+            status=f"/status/{job.id}",
+            cancel=f"/cancel/{job.id}",
+            stream=f"/stream/{job.id}",
+        )
 
         return JobResult(
-            id=ij.id,
+            job_id=job.id,
             status=status,
-            progress=jp,
-            error=ij.error,
+            error=job.error,
             result=result,
-            created_at=created_at,
-            queued_at=queued_at,
-            execution_started_at=execution_started_at,
-            execution_finished_at=execution_finished_at
+            progress=progress,
+            message=message,
+            service=service,
+            endpoint=endpoint,
+            metrics=metrics,
+            links=links,
         )
 
     @staticmethod
-    def gzip_job_result(job_result: JobResult) -> bytes:
-        job_result_bytes = job_result.json().encode('utf-8')
-        # Compress the serialized bytes with gzip
-        gzip_buffer = BytesIO()
-        with gzip.GzipFile(fileobj=gzip_buffer, mode='wb') as gzip_file:
-            gzip_file.write(job_result_bytes)
+    def _build_metrics(job: BaseJob) -> Optional[JobMetrics]:
+        """Derive timing metrics from orchestrator-provided values or timestamps."""
+        execution_time_s = _opt_float(getattr(job, "execution_time_s", None)) or _compute_duration_s(
+            getattr(job, "created_at", None),
+            getattr(job, "completed_at", None) or getattr(job, "failed_at", None),
+        )
+        upload_time_s = _compute_duration_s(
+            getattr(job, "upload_started_at", None),
+            getattr(job, "upload_finished_at", None),
+        )
+        inference_time_s = _opt_float(getattr(job, "inference_time_s", None))
+        platform_queue_time_s = _opt_float(getattr(job, "platform_queue_time_s", None))
+        provider_queue_time_s = _opt_float(getattr(job, "provider_queue_time_s", None))
 
-        # Retrieve the gzipped data
+        values = (execution_time_s, upload_time_s, inference_time_s,
+                  platform_queue_time_s, provider_queue_time_s)
+        if all(v is None for v in values):
+            return None
+
+        return JobMetrics(
+            execution_time_s=execution_time_s,
+            inference_time_s=inference_time_s,
+            platform_queue_time_s=platform_queue_time_s,
+            provider_queue_time_s=provider_queue_time_s,
+            upload_time_s=upload_time_s,
+        )
+
+    @staticmethod
+    def _job_result_to_json_bytes(job_result: JobResult) -> bytes:
+        if hasattr(job_result, "model_dump_json"):
+            return job_result.model_dump_json(exclude_none=True).encode("utf-8")
+        return job_result.json(exclude_none=True).encode("utf-8")
+
+    @staticmethod
+    def gzip_job_result(job_result: JobResult) -> bytes:
+        raw = JobResultFactory._job_result_to_json_bytes(job_result)
+        gzip_buffer = BytesIO()
+        with gzip.GzipFile(fileobj=gzip_buffer, mode="wb") as gzip_file:
+            gzip_file.write(raw)
         return gzip_buffer.getvalue()
 
     @staticmethod
     def job_not_found(job_id: str) -> JobResult:
         return JobResult(
-            id=job_id,
-            status=JOB_STATUS.FAILED,
-            error="Job not found."
+            job_id=job_id,
+            status="not_found",
+            error="Job not found.",
         )
