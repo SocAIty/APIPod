@@ -33,3 +33,8 @@ runpod = [
 [project.urls]
 Repository = "https://github.com/SocAIty/apipod"
 Homepage = "https://www.socaity.ai"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["apipod*"]
+
