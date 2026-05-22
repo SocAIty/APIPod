@@ -8,13 +8,19 @@ from typing import Union, Callable
 from apipod.common import constants
 from apipod.engine.jobs.base_job import JOB_STATUS
 from apipod.engine.jobs.job_progress import JobProgressRunpod, JobProgress
-from apipod.engine.jobs.job_result import JobResultFactory, JobResult
+from apipod.engine.jobs.job_result import (
+    JobResultFactory,
+    JobResult,
+    JobMetrics,
+    _compute_duration_s,
+    _job_status_to_public,
+)
 from apipod.engine.base_backend import _BaseBackend
 from apipod.engine.files.base_file_mixin import _BaseFileHandlingMixin
 from apipod.engine.backend.runpod.llm_mixin import _RunPodLLMMixin
 
 from apipod.engine.utils import normalize_name
-from apipod.common.settings import APIPOD_PROVIDER, APIPOD_PORT, DEFAULT_DATE_TIME_FORMAT
+from apipod.common.settings import APIPOD_PROVIDER, APIPOD_PORT
 
 
 class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin):
@@ -193,12 +199,8 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
         # Handle file uploads and conversions
         route_function = self._handle_file_uploads(route_function)
 
-        # Prepare result tracking
         start_time = datetime.now(timezone.utc)
-        result = JobResult(
-            job_id=job["id"],
-            created_at=start_time.strftime(DEFAULT_DATE_TIME_FORMAT),
-        )
+        result = JobResult(job_id=job["id"], endpoint=path)
 
         try:
             # Execute the function (Sync or Async Handling)
@@ -214,17 +216,24 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
             res = JobResultFactory._serialize_result(res)
 
             result.result = res
-            result.status = JOB_STATUS.FINISHED.value
+            result.status = _job_status_to_public(JOB_STATUS.FINISHED)
         except Exception as e:
             result.error = str(e)
-            result.status = JOB_STATUS.FAILED.value
+            result.status = _job_status_to_public(JOB_STATUS.FAILED)
             print(f"Job {job['id']} failed: {str(e)}")
             traceback.print_exc()
-        finally:
-            result.updated_at = datetime.now(timezone.utc).strftime(DEFAULT_DATE_TIME_FORMAT)
 
-        result = result.model_dump_json()
-        return result
+        for arg in kwargs.values():
+            if isinstance(arg, JobProgressRunpod):
+                result.progress = float(arg._progress)
+                result.message = arg._message
+                break
+
+        inference_time_s = _compute_duration_s(start_time, datetime.now(timezone.utc))
+        if inference_time_s is not None:
+            result.metrics = JobMetrics(inference_time_s=inference_time_s)
+
+        return result.model_dump_json(exclude_none=True)
 
     def _execute_route_function(self, route_function, kwargs):
         """
