@@ -38,3 +38,10 @@ Homepage = "https://www.socaity.ai"
 where = ["."]
 include = ["apipod*"]
 
+[tool.setuptools.package-data]
+apipod = [
+    "deploy/*.j2",
+    "deploy/*.txt",
+    "deploy/starter_README.md",
+]
+
