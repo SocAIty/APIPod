@@ -3,7 +3,7 @@ import json
 import os
 import re
 import toml
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 from apipod.deploy.profile import (
     DIFFUSERS_PACKAGES,
@@ -16,7 +16,7 @@ from .IDetector import Detector
 
 
 class FrameworkDetector(Detector):
-    def detect(self) -> Dict[str, Any]:
+    def detect(self, entrypoint: Optional[str] = None) -> Dict[str, Any]:
         print("Scanning for frameworks and models...")
         self._detected_python_version = None
         config: Dict[str, Any] = {
@@ -29,14 +29,16 @@ class FrameworkDetector(Detector):
             "python_version": "3.10",
             "model_files": [],
             "python_dependencies": [],
+            "entrypoint_imports": [],
         }
 
         dep_names = self._gather_dependency_names()
         config["python_dependencies"] = sorted(dep_names)
         self._apply_dependency_packages(dep_names, config)
 
-        if not self._has_any_framework(config):
-            self._check_imports(config)
+        entrypoint_imports = self._check_entrypoint_imports(entrypoint)
+        config["entrypoint_imports"] = sorted(entrypoint_imports)
+        self._apply_entrypoint_imports(entrypoint_imports, config)
 
         self._scan_model_files(config)
         return config
@@ -61,9 +63,13 @@ class FrameworkDetector(Detector):
                 match = re.search(r"3\.(\d+)", ver)
                 if match:
                     self._detected_python_version = f"3.{match.group(1)}"
+                from apipod.deploy.profile import POETRY_NON_PACKAGE_KEYS
+
                 poetry_deps = data.get("tool", {}).get("poetry", {}).get("dependencies", {})
                 for dep in poetry_deps.keys():
-                    names.add(dep.lower())
+                    key = dep.lower()
+                    if key not in POETRY_NON_PACKAGE_KEYS:
+                        names.add(key)
             except Exception as exc:
                 print(f"Warning: Error parsing pyproject.toml: {exc}")
 
@@ -113,43 +119,40 @@ class FrameworkDetector(Detector):
         name = re.split(r"[\s=<>!~;\[]", dependency, maxsplit=1)[0].strip()
         return name.lower().replace("_", "-")
 
-    def _check_imports(self, config: Dict[str, Any]) -> None:
-        import_modules = {
+    def _check_entrypoint_imports(self, entrypoint: Optional[str]) -> Set[str]:
+        """Inspect only the service entrypoint for ML imports (not the whole repo)."""
+        if not entrypoint:
+            return set()
+
+        file_path = os.path.join(self.project_root, entrypoint)
+        if not os.path.isfile(file_path):
+            return set()
+
+        top_level: Set[str] = set()
+        try:
+            with open(file_path, "r", encoding="utf-8") as handle:
+                tree = ast.parse(handle.read(), filename=entrypoint)
+        except Exception:
+            return top_level
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    top_level.add(alias.name.split(".", 1)[0])
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                top_level.add(node.module.split(".", 1)[0])
+        return top_level
+
+    def _apply_entrypoint_imports(self, entrypoint_imports: Set[str], config: Dict[str, Any]) -> None:
+        mapping = {
             "pytorch": {"torch", "torchvision", "torchaudio"},
             "tensorflow": {"tensorflow", "keras"},
             "onnx": {"onnx", "onnxruntime"},
             "transformers": {"transformers"},
             "diffusers": {"diffusers"},
         }
-
-        for root, _, files in os.walk(self.project_root):
-            if self.should_ignore(root):
-                continue
-            for file in files:
-                if not file.endswith(".py"):
-                    continue
-                try:
-                    with open(os.path.join(root, file), "r", encoding="utf-8") as handle:
-                        tree = ast.parse(handle.read(), filename=file)
-                except Exception:
-                    continue
-
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Import):
-                        for alias in node.names:
-                            top = alias.name.split(".", 1)[0]
-                            self._mark_import(top, config, import_modules)
-                    elif isinstance(node, ast.ImportFrom) and node.module:
-                        top = node.module.split(".", 1)[0]
-                        self._mark_import(top, config, import_modules)
-
-            if self._has_any_framework(config):
-                break
-
-    @staticmethod
-    def _mark_import(top: str, config: Dict[str, Any], import_modules: Dict[str, Set[str]]) -> None:
-        for key, modules in import_modules.items():
-            if top in modules:
+        for key, modules in mapping.items():
+            if entrypoint_imports & modules:
                 config[key] = True
 
     def _scan_model_files(self, config: Dict[str, Any]) -> None:

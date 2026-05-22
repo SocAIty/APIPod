@@ -10,7 +10,7 @@ from apipod.deploy.detectors import (
     EntrypointDetector,
     FrameworkDetector,
 )
-from apipod.deploy.profile import infer_profile
+from apipod.deploy.profile import infer_profile, reconcile_framework_flags
 
 
 @dataclass
@@ -57,11 +57,14 @@ class Scanner:
         print("\n--- Starting Project Scan ---\n")
 
         entrypoint_info = self.entrypoint_detector.detect(target_file=target_file)
-        framework_info = self.framework_detector.detect()
+        entrypoint = entrypoint_info.get("file", target_file or "main.py")
+        framework_info = self.framework_detector.detect(entrypoint=entrypoint)
         dependency_info = self.dependency_detector.detect()
         env_info = self.env_detector.detect()
 
         python_deps: Set[str] = set(framework_info.get("python_dependencies", []))
+        entrypoint_imports: Set[str] = set(framework_info.get("entrypoint_imports", []))
+        model_files: List[str] = framework_info.get("model_files", [])
 
         system_packages: List[str] = []
         if dependency_info.get("gcc"):
@@ -69,12 +72,25 @@ class Scanner:
         if dependency_info.get("libturbojpg"):
             system_packages.append("libturbojpg")
 
-        pytorch = bool(framework_info.get("pytorch"))
-        tensorflow = bool(framework_info.get("tensorflow"))
-        onnx = bool(framework_info.get("onnx"))
-        transformers = bool(framework_info.get("transformers"))
-        diffusers = bool(framework_info.get("diffusers"))
-        cuda = bool(framework_info.get("cuda"))
+        raw_flags = {
+            "pytorch": bool(framework_info.get("pytorch")),
+            "tensorflow": bool(framework_info.get("tensorflow")),
+            "onnx": bool(framework_info.get("onnx")),
+            "transformers": bool(framework_info.get("transformers")),
+            "diffusers": bool(framework_info.get("diffusers")),
+            "cuda": bool(framework_info.get("cuda")),
+        }
+        flags = reconcile_framework_flags(
+            python_deps=python_deps,
+            entrypoint_imports=entrypoint_imports,
+            model_files=model_files,
+        )
+        pytorch = flags["pytorch"]
+        tensorflow = flags["tensorflow"]
+        onnx = flags["onnx"]
+        transformers = flags["transformers"]
+        diffusers = flags["diffusers"]
+        cuda = flags["cuda"]
 
         compute = entrypoint_info.get("compute")
         provider = entrypoint_info.get("provider")
@@ -88,7 +104,14 @@ class Scanner:
             compute=compute,
             provider=provider,
             python_deps=python_deps,
+            model_files=model_files,
         )
+
+        if flags != raw_flags:
+            print(
+                "Adjusted framework flags after verification "
+                f"(entrypoint imports: {', '.join(sorted(entrypoint_imports)) or 'none'})"
+            )
 
         deployment_config = DeploymentConfig(
             entrypoint=entrypoint_info.get("file", target_file or "main.py"),
