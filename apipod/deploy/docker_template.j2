@@ -67,5 +67,14 @@ ENV APIPOD_PORT=8000
 EXPOSE 8000
 
 # Set the entrypoint
+{%- if provider == "runpod" %}
+# RunPod serverless: APIPod(provider="runpod") returns a SocaityRunpodRouter, which is
+# NOT an ASGI app. uvicorn would import it and then 500 on every request with
+# "TypeError: 'SocaityRunpodRouter' object is not callable" — causing RunPod's deploy
+# orchestrator to mark the container unhealthy and re-provision endlessly.
+# Run the service script directly so app.start() hands off to runpod's worker harness.
+CMD ["python", "{{ entrypoint_script }}", "--rp_api_host", "0.0.0.0", "--rp_api_port", "8000"]
+{%- else %}
 # We use uvicorn to serve the APIPod instance
 CMD ["uvicorn", "{{ entrypoint_module }}:app", "--host", "0.0.0.0", "--port", "8000"]
+{%- endif %}

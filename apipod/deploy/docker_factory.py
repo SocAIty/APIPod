@@ -94,6 +94,7 @@ class DockerFactory:
             "base_image": base_image,
             "has_requirements": has_requirements,
             "entrypoint_module": entrypoint_module,
+            "entrypoint_script": Path(entrypoint).name,
             "install_cudnn": should_install_cudnn,
             "system_packages": config.get("system_packages", []),
             "orchestrator": config.get("orchestrator", "local"),
