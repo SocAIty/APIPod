@@ -130,9 +130,14 @@ def run_build(args):
         print("Error: Failed to obtain configuration.")
         return
 
-    config_data["orchestrator"] = args.orchestrator
-    config_data["compute"] = args.compute
-    config_data["provider"] = args.provider
+    # Only override apipod.json with CLI flags when the user actually passed them.
+    # Argparse defaults are None so a plain `apipod --build` preserves the config file.
+    if args.orchestrator is not None:
+        config_data["orchestrator"] = args.orchestrator
+    if args.compute is not None:
+        config_data["compute"] = args.compute
+    if args.provider is not None:
+        config_data["provider"] = args.provider
     if args.region:
         config_data["region"] = args.region
 
@@ -162,16 +167,20 @@ def run_start(args):
     """Start an APIPod service with the given configuration."""
     from apipod import APIPod
 
+    orchestrator = args.orchestrator or "local"
+    compute = args.compute or "dedicated"
+    provider = args.provider or "localhost"
+
     app = APIPod(
-        orchestrator=args.orchestrator,
-        compute=args.compute,
-        provider=args.provider,
+        orchestrator=orchestrator,
+        compute=compute,
+        provider=provider,
     )
 
     port = args.port or 8000
     host = args.host or "0.0.0.0"
 
-    print(f"Starting APIPod (orchestrator={args.orchestrator}, compute={args.compute}, provider={args.provider})")
+    print(f"Starting APIPod (orchestrator={orchestrator}, compute={compute}, provider={provider})")
     app.start(port=port, host=host)
 
 
@@ -218,20 +227,20 @@ Examples:
     config_group.add_argument(
         "--orchestrator",
         choices=orchestrator_choices,
-        default="local",
-        help=f"Orchestration platform (default: local). Options: {', '.join(orchestrator_choices)}"
+        default=None,
+        help=f"Orchestration platform. Overrides apipod.json when passed; otherwise falls back to the config file or 'local'. Options: {', '.join(orchestrator_choices)}"
     )
     config_group.add_argument(
         "--compute",
         choices=compute_choices,
-        default="dedicated",
-        help=f"Compute type (default: dedicated). Options: {', '.join(compute_choices)}"
+        default=None,
+        help=f"Compute type. Overrides apipod.json when passed; otherwise falls back to the config file or 'dedicated'. Options: {', '.join(compute_choices)}"
     )
     config_group.add_argument(
         "--provider",
         choices=provider_choices,
-        default="localhost",
-        help=f"Infrastructure provider (default: localhost). Options: {', '.join(provider_choices)}"
+        default=None,
+        help=f"Infrastructure provider. Overrides apipod.json when passed; otherwise falls back to the config file or 'localhost'. Options: {', '.join(provider_choices)}"
     )
     config_group.add_argument(
         "--region",
