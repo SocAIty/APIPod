@@ -19,7 +19,6 @@ class DockerFactory:
         "python:3.12-slim",
         "python:3.11-slim",
         "python:3.10-slim",
-        "ghcr.io/astral-sh/uv:python3.12-bookworm-slim",
         "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
         "nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04",
     ]
@@ -47,10 +46,8 @@ class DockerFactory:
                 with images_path.open("r", encoding="utf-8") as f:
                     images = [line.strip() for line in f if line.strip()]
                     if images:
-                        preferred = [
-                            "ghcr.io/astral-sh/uv:python3.12-bookworm-slim",
-                            "python:3.12-slim",
-                        ]
+                        # Keep python:3.12-slim at the top as the recommended default.
+                        preferred = ["python:3.12-slim"]
                         merged = preferred + [img for img in images if img not in preferred]
                         return merged
             except Exception:
@@ -65,8 +62,6 @@ class DockerFactory:
         if profile == PROFILE_SERVERLESS_MINIMAL:
             version = str(config.get("python_version") or "3.12")
             for img in self.images:
-                if f"python{version}" in img and "astral-sh/uv" in img:
-                    return img
                 if f"python:{version}-slim" in img:
                     return img
         return suggested

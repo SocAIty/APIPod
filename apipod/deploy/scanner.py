@@ -144,17 +144,23 @@ class Scanner:
             with self.config_path.open("w", encoding="utf-8") as f:
                 json.dump(config, f, indent=4)
             print(f"Configuration saved to {self.config_path}")
-            self._write_starter_files(config)
+            self._write_deploy_dir_helpers(config)
         except Exception as exc:
             print(f"Error saving configuration: {exc}")
 
-    def _write_starter_files(self, config: Dict[str, Any]) -> None:
+    def _write_deploy_dir_helpers(self, config: Dict[str, Any]) -> None:
+        """
+        Drop two helper files next to apipod.json the first time we scan a project:
+        - README.md: a short guide explaining what the apipod-deploy/ folder is for.
+        - .dockerignore: sensible defaults so `apipod --build` doesn't copy junk.
+        Both are skipped if the user already created their own.
+        """
         deploy_dir = self.config_path.parent
         readme_dst = deploy_dir / "README.md"
-        starter = Path(__file__).parent / "starter_README.md"
-        if starter.is_file() and not readme_dst.exists():
-            shutil.copy(starter, readme_dst)
-            print(f"Starter guide written to {readme_dst}")
+        readme_template = Path(__file__).parent / "starter_README.md"
+        if readme_template.is_file() and not readme_dst.exists():
+            shutil.copy(readme_template, readme_dst)
+            print(f"Wrote deploy-folder guide to {readme_dst}")
 
         dockerignore = deploy_dir / ".dockerignore"
         if not dockerignore.exists():

@@ -174,6 +174,16 @@ class FrameworkDetector(Detector):
         config["model_files"] = found_files
 
     def _is_model_json(self, file_path: str) -> bool:
+        """
+        Heuristic for spotting HuggingFace-style model config JSONs in the repo.
+
+        Three layers, cheapest first:
+        1. Filename whitelist: HF always names these the same way.
+        2. Filename blocklist: common project JSONs that look related but aren't.
+        3. Content sniff: open the file and look for keys that only show up in
+           model configs (architectures, hidden_size, etc.). Cap at 1 MB so we
+           don't accidentally parse a giant tokenizer vocab.
+        """
         filename = os.path.basename(file_path).lower()
         if filename in {
             "config.json",
@@ -199,6 +209,7 @@ class FrameworkDetector(Detector):
                 content = json.load(handle)
             if isinstance(content, dict):
                 keys = content.keys()
+                # Keys typical of HF transformer / model configs.
                 model_keys = {
                     "architectures",
                     "model_type",

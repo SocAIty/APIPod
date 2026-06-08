@@ -9,13 +9,12 @@ class EntrypointDetector(Detector):
     def detect(self, target_file: Optional[str] | None = None) -> Dict[str, Any]:
         print("Scanning for entrypoint and service configuration...")
 
+        # Only fields the detector populates from the entrypoint go here.
+        # Deployment defaults (orchestrator/compute/provider) live in DeploymentConfig.
         result = {
             "file": None,
             "title": "apipod-service",
             "found_config": False,
-            "orchestrator": "local",
-            "compute": "dedicated",
-            "provider": "localhost",
         }
 
         # 1. Prioritize user-provided target file
