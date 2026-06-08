@@ -1,3 +1,15 @@
+"""
+Standard request / response schemas for APIPod services.
+
+The shape of every schema in this file mirrors the OpenAI API so that
+clients written against the OpenAI SDK (or any OpenAI-compatible tool)
+can talk to an APIPod service without translation. That choice is about
+the wire format; it does NOT imply the schemas are tied to OpenAI's own
+models. Any provider (Flux, Stable Diffusion, ElevenLabs, Whisper, Suno,
+DeepSeek, etc.) plugs into the same schemas and the routing layer
+dispatches to whatever runs behind it.
+"""
+
 from typing import List, Optional, Union, Literal
 from pydantic import BaseModel
 
@@ -7,7 +19,16 @@ from media_toolkit import ImageFile, AudioFile
 # Base schema
 # =====================================================
 
-class OpenAIBaseModel(BaseModel):
+class APIPodSchemaBase(BaseModel):
+    """
+    Base for every APIPod request / response model.
+
+    Shape follows the OpenAI API spec so OpenAI-compatible clients work
+    out of the box, but the schemas are provider-agnostic: anything that
+    matches the shape (Flux, SD, ElevenLabs, Whisper, in-house models...)
+    is a valid backend.
+    """
+
     model_config = {
         "extra": "forbid",
         "validate_assignment": True,
@@ -23,12 +44,12 @@ class OpenAIBaseModel(BaseModel):
 # Chat Completions - Input schemas
 # =====================================================
 
-class ChatMessage(OpenAIBaseModel):
+class ChatMessage(APIPodSchemaBase):
     role: Literal["system", "user", "assistant"]
     content: str
 
 
-class ChatCompletionRequest(OpenAIBaseModel):
+class ChatCompletionRequest(APIPodSchemaBase):
     model: str
     messages: List[ChatMessage]
 
@@ -47,7 +68,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
 # Text Completion - Input schemas
 # =====================================================
 
-class CompletionRequest(OpenAIBaseModel):
+class CompletionRequest(APIPodSchemaBase):
     model: str
     prompt: Union[str, List[str]]
 
@@ -63,7 +84,7 @@ class CompletionRequest(OpenAIBaseModel):
 # Embedding - Input schemas
 # =====================================================
 
-class EmbeddingRequest(OpenAIBaseModel):
+class EmbeddingRequest(APIPodSchemaBase):
     model: str
     input: Union[str, List[str]]
     user: Optional[str] = None
@@ -73,7 +94,7 @@ class EmbeddingRequest(OpenAIBaseModel):
 # Image Generation - Input schemas
 # =====================================================
 
-class ImageGenerationRequest(OpenAIBaseModel):
+class ImageGenerationRequest(APIPodSchemaBase):
     model: str
     prompt: str
 
@@ -90,7 +111,7 @@ class ImageGenerationRequest(OpenAIBaseModel):
 # Video Generation - Input schemas
 # =====================================================
 
-class VideoGenerationRequest(OpenAIBaseModel):
+class VideoGenerationRequest(APIPodSchemaBase):
     model: str
     prompt: str
 
@@ -105,7 +126,7 @@ class VideoGenerationRequest(OpenAIBaseModel):
 # Audio - Input schemas (TTS, STT, music)
 # =====================================================
 
-class AudioRequest(OpenAIBaseModel):
+class AudioRequest(APIPodSchemaBase):
     model: str
 
     text: Optional[str] = None
@@ -120,7 +141,7 @@ class AudioRequest(OpenAIBaseModel):
 # 3D Generation - Input schemas
 # =====================================================
 
-class Generation3DRequest(OpenAIBaseModel):
+class Generation3DRequest(APIPodSchemaBase):
     model: str
 
     prompt: Optional[str] = None
@@ -133,7 +154,7 @@ class Generation3DRequest(OpenAIBaseModel):
 # Vision - Input schemas (classify, detect, OCR)
 # =====================================================
 
-class VisionRequest(OpenAIBaseModel):
+class VisionRequest(APIPodSchemaBase):
     model: str
     image: ImageFile
 
@@ -146,7 +167,7 @@ class VisionRequest(OpenAIBaseModel):
 # Multimodal Embedding - Input schemas
 # =====================================================
 
-class MultimodalEmbeddingRequest(OpenAIBaseModel):
+class MultimodalEmbeddingRequest(APIPodSchemaBase):
     model: str
 
     input: Optional[Union[str, List[str]]] = None
@@ -174,7 +195,7 @@ SUPPORTED_LLM_REQUEST_SCHEMAS = (
 # Shared output schemas
 # =====================================================
 
-class Usage(OpenAIBaseModel):
+class Usage(APIPodSchemaBase):
     prompt_tokens: int
     completion_tokens: Optional[int] = None
     total_tokens: int
@@ -184,18 +205,18 @@ class Usage(OpenAIBaseModel):
 # Chat Completions - Output schemas
 # =====================================================
 
-class ChatCompletionMessage(OpenAIBaseModel):
+class ChatCompletionMessage(APIPodSchemaBase):
     role: Literal["assistant"]
     content: str
 
 
-class ChatCompletionChoice(OpenAIBaseModel):
+class ChatCompletionChoice(APIPodSchemaBase):
     index: int
     message: ChatCompletionMessage
     finish_reason: Literal["stop", "length", "content_filter"]
 
 
-class ChatCompletionResponse(OpenAIBaseModel):
+class ChatCompletionResponse(APIPodSchemaBase):
     id: str
     object: Literal["chat.completion"]
     created: int
@@ -208,14 +229,14 @@ class ChatCompletionResponse(OpenAIBaseModel):
 # Text Completion - Output schemas
 # =====================================================
 
-class CompletionChoice(OpenAIBaseModel):
+class CompletionChoice(APIPodSchemaBase):
     text: str
     index: int
     logprobs: None = None
     finish_reason: Literal["stop", "length", "content_filter"]
 
 
-class CompletionResponse(OpenAIBaseModel):
+class CompletionResponse(APIPodSchemaBase):
     id: str
     object: Literal["text_completion"]
     created: int
@@ -228,13 +249,13 @@ class CompletionResponse(OpenAIBaseModel):
 # Embedding - Output schemas
 # =====================================================
 
-class EmbeddingData(OpenAIBaseModel):
+class EmbeddingData(APIPodSchemaBase):
     object: Literal["embedding"]
     embedding: List[float]
     index: int
 
 
-class EmbeddingResponse(OpenAIBaseModel):
+class EmbeddingResponse(APIPodSchemaBase):
     object: Literal["list"]
     data: List[EmbeddingData]
     model: str
@@ -245,14 +266,14 @@ class EmbeddingResponse(OpenAIBaseModel):
 # Image Generation - Output schemas
 # =====================================================
 
-class ImageGenerationData(OpenAIBaseModel):
+class ImageGenerationData(APIPodSchemaBase):
     url: Optional[str] = None
     b64_json: Optional[str] = None
     revised_prompt: Optional[str] = None
     seed: Optional[int] = None
 
 
-class ImageGenerationResponse(OpenAIBaseModel):
+class ImageGenerationResponse(APIPodSchemaBase):
     id: str
     object: Literal["image_generation"]
     created: int
@@ -265,13 +286,13 @@ class ImageGenerationResponse(OpenAIBaseModel):
 # Video Generation - Output schemas
 # =====================================================
 
-class VideoGenerationData(OpenAIBaseModel):
+class VideoGenerationData(APIPodSchemaBase):
     url: Optional[str] = None
     duration_s: Optional[float] = None
     seed: Optional[int] = None
 
 
-class VideoGenerationResponse(OpenAIBaseModel):
+class VideoGenerationResponse(APIPodSchemaBase):
     id: str
     object: Literal["video_generation"]
     created: int
@@ -284,14 +305,14 @@ class VideoGenerationResponse(OpenAIBaseModel):
 # Audio - Output schemas
 # =====================================================
 
-class AudioData(OpenAIBaseModel):
+class AudioData(APIPodSchemaBase):
     audio: Optional[str] = None
     text: Optional[str] = None
     language: Optional[str] = None
     duration_s: Optional[float] = None
 
 
-class AudioResponse(OpenAIBaseModel):
+class AudioResponse(APIPodSchemaBase):
     id: str
     object: Literal["audio"]
     created: int
@@ -304,13 +325,13 @@ class AudioResponse(OpenAIBaseModel):
 # 3D Generation - Output schemas
 # =====================================================
 
-class Generation3DData(OpenAIBaseModel):
+class Generation3DData(APIPodSchemaBase):
     url: Optional[str] = None
     output_format: Optional[str] = None
     seed: Optional[int] = None
 
 
-class Generation3DResponse(OpenAIBaseModel):
+class Generation3DResponse(APIPodSchemaBase):
     id: str
     object: Literal["generation_3d"]
     created: int
@@ -323,18 +344,18 @@ class Generation3DResponse(OpenAIBaseModel):
 # Vision - Output schemas (classify, detect, OCR)
 # =====================================================
 
-class VisionLabel(OpenAIBaseModel):
+class VisionLabel(APIPodSchemaBase):
     label: str
     score: float
     box: Optional[List[float]] = None
 
 
-class VisionData(OpenAIBaseModel):
+class VisionData(APIPodSchemaBase):
     labels: List[VisionLabel] = []
     text: Optional[str] = None
 
 
-class VisionResponse(OpenAIBaseModel):
+class VisionResponse(APIPodSchemaBase):
     id: str
     object: Literal["vision"]
     created: int
@@ -347,14 +368,14 @@ class VisionResponse(OpenAIBaseModel):
 # Multimodal Embedding - Output schemas
 # =====================================================
 
-class MultimodalEmbeddingData(OpenAIBaseModel):
+class MultimodalEmbeddingData(APIPodSchemaBase):
     object: Literal["embedding"] = "embedding"
     embedding: List[float]
     index: int
     modality: Optional[Literal["text", "image", "audio"]] = None
 
 
-class MultimodalEmbeddingResponse(OpenAIBaseModel):
+class MultimodalEmbeddingResponse(APIPodSchemaBase):
     object: Literal["list"]
     data: List[MultimodalEmbeddingData]
     model: str
