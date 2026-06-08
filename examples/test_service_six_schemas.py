@@ -1,0 +1,76 @@
+"""
+Minimal APIPod service used to verify media-file integration end to end for
+PR #15 (the 6 new Pydantic schemas).
+
+It exposes two endpoints:
+- POST /vision      uses VisionRequest, which has a REQUIRED image field
+- POST /audio       uses AudioRequest, which has an OPTIONAL audio field
+
+Both endpoints just inspect the incoming media file and echo back a few
+properties (size, content type, etc.) so we can confirm the file_handling
+mixin actually deserialized URL/base64 input into a real ImageFile/AudioFile.
+
+Run with:
+    python examples/test_service_six_schemas.py
+The server starts on http://0.0.0.0:8000 with OpenAPI docs at /docs.
+"""
+
+from apipod import APIPod
+from apipod.common.schemas import (
+    VisionRequest,
+    VisionResponse,
+    VisionData,
+    AudioRequest,
+    AudioResponse,
+    AudioData,
+)
+
+
+app = APIPod()
+
+
+def _media_summary(media) -> dict:
+    """Pull a couple of safe fields off whatever media_toolkit returned."""
+    if media is None:
+        return {"present": False}
+    return {
+        "present": True,
+        "type": type(media).__name__,
+        "size_bytes": getattr(media, "file_size", None) or getattr(media, "size", None),
+        "content_type": getattr(media, "content_type", None),
+    }
+
+
+@app.endpoint("/vision")
+def vision(req: VisionRequest):
+    """
+    Echoes back a fake VisionData. The point is not the label, it's that
+    req.image arrives as an ImageFile (deserialized from upload / base64 / URL).
+    """
+    summary = _media_summary(req.image)
+    return {
+        "data": [
+            VisionData(label=f"echo:{summary}", score=1.0, box=None)
+        ]
+    }
+
+
+@app.endpoint("/audio")
+def audio(req: AudioRequest):
+    """
+    Echoes the audio properties (or text if no audio was sent).
+    """
+    if req.audio is not None:
+        summary = _media_summary(req.audio)
+        text = f"echo:{summary}"
+    else:
+        text = f"no-audio:text={req.text!r}"
+    return {
+        "data": [
+            AudioData(text=text, language=req.language, duration_s=None)
+        ]
+    }
+
+
+if __name__ == "__main__":
+    app.start(port=8000, host="0.0.0.0")
