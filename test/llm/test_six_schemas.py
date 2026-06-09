@@ -316,10 +316,30 @@ def test_generation_3d_wrap(mixin):
     assert wrapped.id.startswith("gen3d-")
 
 
-# 1x1 transparent PNG used to construct ImageFile without hitting the network.
-_TINY_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
-)
+# 32x32 solid-red PNG (~100 bytes / ~140 b64 chars). The previous 1x1 PNG
+# was too short for media_toolkit's base64 sniffer (it bails on payloads
+# below the heuristic length to avoid false positives on short tokens).
+def _make_png_b64() -> str:
+    import base64
+    import struct
+    import zlib
+
+    w = h = 32
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    raw = b""
+    for _ in range(h):
+        raw += b"\x00" + bytes((255, 0, 0) * w)
+    idat = zlib.compress(raw)
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr))
+        + struct.pack(">I", len(idat)) + b"IDAT" + idat + struct.pack(">I", zlib.crc32(b"IDAT" + idat))
+        + struct.pack(">I", 0) + b"IEND" + struct.pack(">I", zlib.crc32(b"IEND"))
+    )
+    return base64.b64encode(png).decode("ascii")
+
+
+_TINY_PNG_B64 = _make_png_b64()
 
 
 def test_vision_wrap(mixin):

@@ -27,13 +27,30 @@ PUBLIC_IMAGE_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PN
 
 
 def _make_local_png_bytes() -> bytes:
-    """A minimal valid PNG, no dependencies."""
-    return bytes.fromhex(
-        "89504e470d0a1a0a0000000d49484452"
-        "000000010000000108060000001f15c4"
-        "890000000a49444154789c6300010000"
-        "0500010d0a2db40000000049454e44ae"
-        "426082"
+    """Build a small but real-sized PNG (32x32 solid red) in-process.
+
+    media_toolkit's base64 sniffer needs a payload long enough to be confident
+    it is base64 and not a short identifier-looking string. The original 1x1
+    PNG (67 bytes / 92 b64 chars) sat below the heuristic; 32x32 (~100 bytes /
+    ~140 b64 chars) is comfortably above it and matches realistic JSON callers.
+    """
+    import struct
+    import zlib
+
+    width = height = 32
+    color = (255, 0, 0)
+
+    ihdr_data = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    raw = b""
+    for _ in range(height):
+        raw += b"\x00" + bytes(color * width)
+    idat = zlib.compress(raw)
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + struct.pack(">I", len(ihdr_data)) + b"IHDR" + ihdr_data + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr_data))
+        + struct.pack(">I", len(idat)) + b"IDAT" + idat + struct.pack(">I", zlib.crc32(b"IDAT" + idat))
+        + struct.pack(">I", 0) + b"IEND" + struct.pack(">I", zlib.crc32(b"IEND"))
     )
 
 

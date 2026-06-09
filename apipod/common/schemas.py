@@ -69,16 +69,13 @@ class APIPodSchemaBase(BaseModel):
             media_type = _media_field_type(field_info.annotation)
             if media_type is None:
                 continue
-            if value.startswith(("http://", "https://", "data:")):
-                data[field_name] = media_from_any(
-                    data=value,
-                    type_hint=media_type,
-                    use_temp_file=True,
-                    temp_dir=None,
-                    allow_reads_from_disk=False,
-                )
-            else:
-                data[field_name] = media_type().from_base64(value)
+            data[field_name] = media_from_any(
+                data=value,
+                type_hint=media_type,
+                use_temp_file=True,
+                temp_dir=None,
+                allow_reads_from_disk=False,
+            )
         return data
 
 
