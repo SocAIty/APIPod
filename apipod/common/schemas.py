@@ -10,10 +10,25 @@ DeepSeek, etc.) plugs into the same schemas and the routing layer
 dispatches to whatever runs behind it.
 """
 
-from typing import List, Optional, Union, Literal
-from pydantic import BaseModel
+from types import UnionType
+from typing import Any, List, Literal, Optional, Union, get_args, get_origin
+from pydantic import BaseModel, model_validator
 
-from media_toolkit import ImageFile, AudioFile
+from media_toolkit import AudioFile, ImageFile, MediaFile, VideoFile, media_from_any
+
+_MEDIA_FIELD_TYPES = (ImageFile, AudioFile, VideoFile, MediaFile)
+
+
+def _media_field_type(annotation: Any) -> Optional[type]:
+    """Media class if annotation is media-typed (bare, Optional, or Union), else None."""
+    if annotation in _MEDIA_FIELD_TYPES:
+        return annotation
+    if get_origin(annotation) in (Union, UnionType):
+        for arg in get_args(annotation):
+            if arg in _MEDIA_FIELD_TYPES:
+                return arg
+    return None
+
 
 # =====================================================
 # Base schema
@@ -33,11 +48,38 @@ class APIPodSchemaBase(BaseModel):
         "extra": "forbid",
         "validate_assignment": True,
         "populate_by_name": True,
-        # Allow media_toolkit file types (ImageFile, AudioFile, VideoFile, MediaFile)
-        # as field annotations. APIPod's file_handling_mixin converts URL/base64
-        # inputs into these types before request validation.
+        # ImageFile / AudioFile / VideoFile / MediaFile are non-BaseModel types
+        # used as field annotations; the pre-validator below converts URL /
+        # base64 strings into instances before per-field validation.
         "arbitrary_types_allowed": True,
     }
+
+    @model_validator(mode="before")
+    @classmethod
+    def _convert_media_strings(cls, data: Any) -> Any:
+        """URL / data URI through media_from_any, bare base64 through from_base64."""
+        if not isinstance(data, dict):
+            return data
+        for field_name, field_info in cls.model_fields.items():
+            if field_name not in data:
+                continue
+            value = data[field_name]
+            if not isinstance(value, str):
+                continue
+            media_type = _media_field_type(field_info.annotation)
+            if media_type is None:
+                continue
+            if value.startswith(("http://", "https://", "data:")):
+                data[field_name] = media_from_any(
+                    data=value,
+                    type_hint=media_type,
+                    use_temp_file=True,
+                    temp_dir=None,
+                    allow_reads_from_disk=False,
+                )
+            else:
+                data[field_name] = media_type().from_base64(value)
+        return data
 
 
 # =====================================================

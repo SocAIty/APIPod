@@ -18,11 +18,7 @@ The server starts on http://0.0.0.0:8000 with OpenAPI docs at /docs.
 from apipod import APIPod
 from apipod.common.schemas import (
     VisionRequest,
-    VisionResponse,
-    VisionData,
     AudioRequest,
-    AudioResponse,
-    AudioData,
 )
 
 
@@ -42,32 +38,30 @@ def _media_summary(media) -> dict:
 
 
 @app.endpoint("/vision")
-def vision(req: VisionRequest):
-    """
-    Echoes back a fake VisionData. The point is not the label, it's that
-    req.image arrives as an ImageFile (deserialized from upload / base64 / URL).
-    """
-    summary = _media_summary(req.image)
+def vision(payload: VisionRequest):
+    """Echoes a label built from payload.image. The point is that the image
+    arrived as an ImageFile, deserialized from upload / base64 / URL."""
+    summary = _media_summary(payload.image)
     return {
         "data": [
-            VisionData(label=f"echo:{summary}", score=1.0, box=None)
+            {
+                "labels": [{"label": f"echo:{summary}", "score": 1.0}],
+                "text": None,
+            }
         ]
     }
 
 
 @app.endpoint("/audio")
-def audio(req: AudioRequest):
-    """
-    Echoes the audio properties (or text if no audio was sent).
-    """
-    if req.audio is not None:
-        summary = _media_summary(req.audio)
-        text = f"echo:{summary}"
+def audio(payload: AudioRequest):
+    """Echoes the audio properties (or text if no audio was sent)."""
+    if payload.audio is not None:
+        text = f"echo:{_media_summary(payload.audio)}"
     else:
-        text = f"no-audio:text={req.text!r}"
+        text = f"no-audio:text={payload.text!r}"
     return {
         "data": [
-            AudioData(text=text, language=req.language, duration_s=None)
+            {"text": text, "language": payload.language, "duration_s": None}
         ]
     }
 
