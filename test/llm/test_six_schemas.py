@@ -77,6 +77,11 @@ def test_video_generation_request_defaults():
     assert r.fps == 24
 
 
+def test_video_generation_request_missing_prompt_raises():
+    with pytest.raises(ValidationError):
+        schemas.VideoGenerationRequest(model="hunyuan")
+
+
 def test_audio_request_all_inputs_optional_except_model():
     r = schemas.AudioRequest(model="whisper")
     assert r.text is None
@@ -123,6 +128,94 @@ def test_image_generation_response_wrong_object_raises():
             object="wrong",
             created=1,
             model="flux",
+            data=[],
+        )
+
+
+def test_video_generation_response_object_literal():
+    r = schemas.VideoGenerationResponse(
+        id="vidgen-1-abc",
+        object="video_generation",
+        created=1,
+        model="hunyuan",
+        data=[schemas.VideoGenerationData(url="http://x/v.mp4")],
+    )
+    assert r.object == "video_generation"
+
+
+def test_video_generation_response_wrong_object_raises():
+    with pytest.raises(ValidationError):
+        schemas.VideoGenerationResponse(
+            id="vidgen-1-abc",
+            object="wrong",
+            created=1,
+            model="hunyuan",
+            data=[],
+        )
+
+
+def test_audio_response_object_literal():
+    r = schemas.AudioResponse(
+        id="aud-1-abc",
+        object="audio",
+        created=1,
+        model="whisper",
+        data=[schemas.AudioData(text="hola")],
+    )
+    assert r.object == "audio"
+
+
+def test_audio_response_wrong_object_raises():
+    with pytest.raises(ValidationError):
+        schemas.AudioResponse(
+            id="aud-1-abc",
+            object="wrong",
+            created=1,
+            model="whisper",
+            data=[],
+        )
+
+
+def test_generation_3d_response_object_literal():
+    r = schemas.Generation3DResponse(
+        id="gen3d-1-abc",
+        object="generation_3d",
+        created=1,
+        model="triposr",
+        data=[schemas.Generation3DData(url="http://x/c.glb")],
+    )
+    assert r.object == "generation_3d"
+
+
+def test_generation_3d_response_wrong_object_raises():
+    with pytest.raises(ValidationError):
+        schemas.Generation3DResponse(
+            id="gen3d-1-abc",
+            object="wrong",
+            created=1,
+            model="triposr",
+            data=[],
+        )
+
+
+def test_vision_response_object_literal():
+    r = schemas.VisionResponse(
+        id="vis-1-abc",
+        object="vision",
+        created=1,
+        model="clip",
+        data=[schemas.VisionData(labels=[])],
+    )
+    assert r.object == "vision"
+
+
+def test_vision_response_wrong_object_raises():
+    with pytest.raises(ValidationError):
+        schemas.VisionResponse(
+            id="vis-1-abc",
+            object="wrong",
+            created=1,
+            model="clip",
             data=[],
         )
 
@@ -221,6 +314,37 @@ def test_generation_3d_wrap(mixin):
     )
     assert wrapped.object == "generation_3d"
     assert wrapped.id.startswith("gen3d-")
+
+
+# 1x1 transparent PNG used to construct ImageFile without hitting the network.
+_TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+)
+
+
+def test_vision_wrap(mixin):
+    """
+    Vision branch in _wrap_llm_response had no test before; the elif path was
+    never exercised. Covers the branch end-to-end.
+    """
+    req = schemas.VisionRequest(model="clip", image=_TINY_PNG_B64)
+    wrapped = mixin._wrap_llm_response(
+        result={
+            "data": [
+                {
+                    "labels": [{"label": "cat", "score": 0.95}],
+                    "text": None,
+                }
+            ]
+        },
+        response_model=schemas.VisionResponse,
+        endpoint_type="vision",
+        openai_req=req,
+    )
+    assert wrapped.object == "vision"
+    assert wrapped.id.startswith("vis-")
+    assert wrapped.data[0].labels[0].label == "cat"
+    assert wrapped.data[0].labels[0].score == 0.95
 
 
 def test_multimodal_embedding_wrap(mixin):
