@@ -254,7 +254,7 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
         sig = inspect.signature(func)
         job_progress_params = [
             p.name for p in sig.parameters.values()
-            if p.name == "job_progress" or "FastJobProgress" in str(p.annotation)
+            if p.name == "job_progress" or "JobProgress" in str(p.annotation)
         ]
 
         if not job_progress_params:
@@ -290,7 +290,7 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
         sig = inspect.signature(func)
         new_sig = sig.replace(parameters=[
             p for p in sig.parameters.values()
-            if p.name != "job_progress" and "FastJobProgress" not in str(p.annotation)
+            if p.name != "job_progress" and "JobProgress" not in str(p.annotation)
         ])
         if len(new_sig.parameters) != len(sig.parameters):
             return replace_func_signature(func, new_sig)

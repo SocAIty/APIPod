@@ -1,3 +1,7 @@
+import logging
+logger = logging.getLogger(__name__)
+
+
 class JobProgress:
     def __init__(self, progress: float = 0, message: str = None):
         """
@@ -7,14 +11,17 @@ class JobProgress:
         """
         self._progress = progress
         self._message = message
-
+        logger.setLevel(logging.INFO)
+            
     def set_status(self, progress: float = None, message: str = None):
         if progress is not None:
             self._progress = progress
         if message is not None:
             self._message = message
+        logger.info(f"Progress: {self._progress} Message: {self._message}")
+        return self
 
-
+    
 class JobProgressRunpod(JobProgress):
     def __init__(self, runpod_job, progress: float = 0, message: str = None):
         super().__init__(progress=progress, message=message)
