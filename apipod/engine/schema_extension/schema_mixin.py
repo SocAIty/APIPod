@@ -16,7 +16,7 @@ from apipod.common.schemas import (
 )
 
 
-class _BaseLLMMixin:
+class _SchemaExtMixin:
     """
     Mixin class for Base LLM functionality
     """
