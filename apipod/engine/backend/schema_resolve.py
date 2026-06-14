@@ -20,11 +20,13 @@ schemas themselves.
 """
 
 import inspect
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import UnionType
 from typing import Any, Callable, Iterator, Optional, Type, Union, get_args, get_origin
 
+from pydantic import BaseModel
 from media_toolkit import MediaFile
 
 from apipod.common.schemas import *
@@ -233,3 +235,64 @@ def iter_media_chunks(media_file: MediaFile, chunk_size: int = 64 * 1024) -> Ite
     buffer = media_file.to_bytes_io()
     while chunk := buffer.read(chunk_size):
         yield chunk
+
+
+# ----------------------------------------------------------------------------
+# Streaming: wrap raw token deltas into standardized chunk SSE events
+# ----------------------------------------------------------------------------
+
+SSE_DONE = "data: [DONE]\n\n"
+
+
+def _to_sse(chunk: BaseModel) -> str:
+    """Serialize a chunk model into a single server-sent-event data line."""
+    return f"data: {chunk.model_dump_json()}\n\n"
+
+
+def _build_chat_chunk(chunk_id: str, created: int, content: Optional[str], finish_reason: Optional[str]) -> ChatCompletionChunk:
+    return ChatCompletionChunk(
+        id=chunk_id,
+        created=created,
+        choices=[ChatStreamChoice(index=0, delta=ChatDelta(content=content), finish_reason=finish_reason)],
+    )
+
+
+@dataclass(frozen=True)
+class StreamChunkSpec:
+    """How raw token deltas of a streaming schema are wrapped into chunk events."""
+    id_prefix: str
+    build: Callable[[str, int, Optional[str], Optional[str]], BaseModel]
+
+
+# Schema tags whose token stream is wrapped into a standardized chunk SSE stream.
+# Endpoints for these tags may simply yield text tokens; APIPod owns the envelope.
+STREAM_CHUNK_SPECS: dict[str, StreamChunkSpec] = {
+    "chat": StreamChunkSpec(id_prefix="chatcmpl", build=_build_chat_chunk),
+}
+
+
+class SchemaStreamSerializer:
+    """
+    Turns the raw token deltas yielded by a streaming schema endpoint into its
+    standardized chunk SSE stream (e.g. ``ChatCompletionChunk``).
+
+    The endpoint only yields text tokens; APIPod owns the envelope: a stable
+    chunk id, the ``created`` timestamp and the ``object`` discriminator are
+    generated out of the box, closed by a final delta and the ``[DONE]`` sentinel.
+    """
+
+    def __init__(self, binding: SchemaBinding):
+        spec = STREAM_CHUNK_SPECS.get(binding.tag)
+        if spec is None:
+            raise ValueError(f"Schema '{binding.tag}' does not support streaming chunks.")
+        self._build = spec.build
+        self._chunk_id = f"{spec.id_prefix}-{uuid.uuid4().hex[:8]}"
+        self._created = int(datetime.now(timezone.utc).timestamp())
+
+    def delta(self, content: str) -> str:
+        """Serialize a content token into a chunk SSE event."""
+        return _to_sse(self._build(self._chunk_id, self._created, content, None))
+
+    def finish(self) -> str:
+        """Serialize the closing chunk (``finish_reason='stop'``)."""
+        return _to_sse(self._build(self._chunk_id, self._created, None, "stop"))

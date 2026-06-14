@@ -20,7 +20,10 @@ from apipod.engine.utils import normalize_name
 from apipod.engine.backend.fastapi.exception_handling import _FastAPIExceptionHandler
 from apipod.engine.backend.schema_resolve import (
     SchemaBinding,
+    SchemaStreamSerializer,
+    SSE_DONE,
     SSE_STREAM_TAGS,
+    STREAM_CHUNK_SPECS,
     iter_media_chunks,
     wrap_schema_response,
 )
@@ -458,10 +461,12 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
 
     def _as_streaming_response(self, result: Any, binding: SchemaBinding) -> StreamingResponse | None:
         """
-        Build a :class:`StreamingResponse` if the endpoint result is streamable:
+        Build a :class:`StreamingResponse` if a schema endpoint result is streamable:
         - ``AudioFile`` / ``VideoFile`` stream their encoded bytes as raw chunks
           with the proper media content type (OpenAI ``stream_format="audio"``);
-        - generators stream as-is: SSE for token-delta endpoints, raw bytes else.
+        - generators of raw tokens are wrapped into the schema's standardized chunk
+          SSE stream (e.g. ``ChatCompletionChunk``) when one is registered, else
+          streamed as-is: SSE for token-delta endpoints, raw bytes otherwise.
         Returns ``None`` when the result cannot be streamed.
         """
         if isinstance(result, (AudioFile, VideoFile)):
@@ -469,28 +474,47 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             return StreamingResponse(iter_media_chunks(result), media_type=media_type)
 
         if inspect.isgenerator(result) or inspect.isasyncgen(result):
+            if binding.tag in STREAM_CHUNK_SPECS:
+                generator = self._schema_chunk_stream(result, binding)
+            else:
+                generator = self._stream_generator(result)
             media_type = "text/event-stream" if binding.tag in SSE_STREAM_TAGS else "application/octet-stream"
             return StreamingResponse(
-                self._stream_generator(result),
+                generator,
                 media_type=media_type,
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
         return None
 
+    async def _schema_chunk_stream(self, result: Any, binding: SchemaBinding) -> AsyncIterator[str]:
+        """Wrap raw token deltas into the schema's standardized chunk SSE stream."""
+        serializer = SchemaStreamSerializer(binding)
+        async for token in self._stream_generator(result):
+            yield serializer.delta(token)
+        yield serializer.finish()
+        yield SSE_DONE
+
     # ------------------------------------------------------------------
     # Endpoint decorators (task / standard / streaming)
     # ------------------------------------------------------------------
     def _modify_result_decorator(self, func: Callable, plan: EndpointExecutionPlan) -> Callable:
         """
-        Wraps responses of schema endpoints to their given Response format.
-        Serializes media-files to and other objects to JSON
+        Wraps responses of schema endpoints into their declared response format.
+
+        Streaming results (a token generator or media file) are turned into the
+        schema's standardized SSE/byte stream; everything else is wrapped into the
+        response model and serialized (media files -> JSON).
         """
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
             result = func(*args, **kwargs)
-            if plan.schema_binding is not None:
-                result = wrap_schema_response(result, plan.schema_binding)
+            binding = plan.schema_binding
+            if binding is not None:
+                streaming = self._as_streaming_response(result, binding)
+                if streaming is not None:
+                    return streaming
+                result = wrap_schema_response(result, binding)
             return JobResultFactory._serialize_result(result)
         return sync_wrapper
 

@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 from typing import List, Union
 from datetime import datetime
 import time
-import uuid
 import random
 
 from apipod import APIPod
@@ -91,7 +90,6 @@ def chat_logic(payload: schemas.ChatCompletionRequest):
     completion_tokens = len(response_text.split()) * 2
 
     return schemas.ChatCompletionResponse(
-        id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
         object="chat.completion",
         created=int(datetime.now().timestamp()),
         model=payload.model or state.model.model_name,
@@ -153,55 +151,19 @@ app = APIPod(
 @app.endpoint(path="/chat")
 def chat_endpoint(payload: schemas.ChatCompletionRequest):
     """Chat completion endpoint with streaming support."""
+    if state.model is None:
+        raise RuntimeError("Model not initialized")
+
     if payload.stream:
-        def sse_generator():
-            if state.model is None:
-                state.model = MockModel("mock-model-v1")
-            
-            chunk_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
-            created_time = int(datetime.now().timestamp())
-            model_name = payload.model or state.model.model_name
-            
-            for token in state.model.stream_generate(
-                messages=payload.messages,
-                temperature=payload.temperature,
-                max_tokens=payload.max_tokens
-            ):
-                chunk = schemas.ChatCompletionChunk(
-                    id=chunk_id,
-                    object="chat.completion.chunk",
-                    created=created_time,
-                    model=model_name,
-                    choices=[
-                        schemas.ChatStreamChoice(
-                            index=0,
-                            delta=schemas.ChatDelta(content=token),
-                            finish_reason=None
-                        )
-                    ]
-                )
-                yield f"data: {chunk.model_dump_json()}\n\n"
-            
-            # Final chunk
-            final_chunk = schemas.ChatCompletionChunk(
-                id=chunk_id,
-                object="chat.completion.chunk",
-                created=created_time,
-                model=model_name,
-                choices=[
-                    schemas.ChatStreamChoice(
-                        index=0,
-                        delta=schemas.ChatDelta(content=None),
-                        finish_reason="stop"
-                    )
-                ]
-            )
-            yield f"data: {final_chunk.model_dump_json()}\n\n"
-            yield "data: [DONE]\n\n"
-        
-        return sse_generator()
-    else:
-        return chat_logic(payload)
+        # Just yield raw tokens — APIPod wraps each into a ChatCompletionChunk SSE
+        # event and emits the closing chunk + [DONE] sentinel out of the box.
+        return state.model.stream_generate(
+            messages=payload.messages,
+            temperature=payload.temperature,
+            max_tokens=payload.max_tokens,
+        )
+
+    return chat_logic(payload)
 
 @app.endpoint(path="/embeddings")
 def embeddings_endpoint(payload: schemas.EmbeddingRequest):

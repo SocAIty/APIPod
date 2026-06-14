@@ -107,7 +107,7 @@ Three streaming paths exist today:
 
 1. **Generator endpoints** — any endpoint function that is a (async) generator, or whose return annotation declares an iterator, is served as an SSE `StreamingResponse` (FastAPI) or as a native generator handed back to RunPod (`return_aggregate_stream`). Detection is annotation/inspect-based — no source-code heuristics.
 2. **Schema endpoints with `stream=true`** — the request schema carries the `stream` flag (chat, completion, transcription, speech, video generation). Streaming bypasses the queue; what gets streamed depends on what the function returns:
-   - a **generator**: streamed as-is — SSE for token-delta endpoints (chat/completion/transcription, e.g. `ChatCompletionChunk` events), raw bytes otherwise;
+   - a **generator of raw tokens**: for tags with a registered chunk model (`STREAM_CHUNK_SPECS`, currently `chat`), `SchemaStreamSerializer` wraps each token into the standardized chunk model (`ChatCompletionChunk`) as an SSE event — APIPod generates the stable chunk `id`, the `created` timestamp and the `object` discriminator, then closes with a final delta and the `[DONE]` sentinel. The endpoint only yields text. Other token-delta tags without a chunk model stream their tokens as-is (SSE), and non-SSE tags stream raw bytes;
    - an **`AudioFile`/`VideoFile`**: its encoded bytes are chunked into a `StreamingResponse` with the file's media content type — raw audio chunks, not SSE, matching OpenAI's `stream_format="audio"` behavior;
    - anything else: the regular wrapped JSON response (the endpoint cannot stream).
    On RunPod the same logic applies, but chunks pass through `_yield_native_stream`, which base64-encodes binary chunks because RunPod transports JSON.

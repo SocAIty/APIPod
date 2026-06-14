@@ -97,7 +97,7 @@ def transcribe(audio: AudioFile):
 
 APIPod ships request/response schemas for the common AI payloads: chat, completions, embeddings, image/video/3D generation, vision, transcription, text-to-speech and voice cloning. Annotate one parameter with a request schema and APIPod handles validation, media parsing, response wrapping and streaming. The wire format mirrors the OpenAI API, so OpenAI-compatible clients work out of the box. `model` is optional everywhere — your service usually *is* the model.
 
-**Chat** — return a plain string (or a dict / full response object) and get a complete `chat.completion` envelope. Return a generator and `"stream": true` requests receive server-sent events:
+**Chat** — return a plain string (or a dict / full response object) and get a complete `chat.completion` envelope. For `"stream": true` requests just yield raw tokens: APIPod wraps each into a `ChatCompletionChunk` server-sent event — generating the chunk `id`, `created` and `object` out of the box — and emits the closing chunk plus the `[DONE]` sentinel:
 
 ```python
 from apipod import APIPod
@@ -107,6 +107,9 @@ app = APIPod()
 
 @app.endpoint("/chat")
 def chat(request: ChatCompletionRequest):
+    if request.stream:
+        # Yield plain tokens — APIPod wraps them into ChatCompletionChunk SSE events.
+        return my_llm.stream(request.messages, temperature=request.temperature)
     answer = my_llm.generate(request.messages, temperature=request.temperature)
     return answer  # auto-wrapped into a ChatCompletionResponse
 ```
