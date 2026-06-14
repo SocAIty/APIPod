@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import functools
 import inspect
 import traceback
@@ -11,20 +12,23 @@ from apipod.engine.jobs.job_progress import JobProgressRunpod, JobProgress
 from apipod.engine.jobs.job_result import JobResultFactory, JobResult
 from apipod.engine.base_backend import _BaseBackend
 from apipod.engine.files.base_file_mixin import _BaseFileHandlingMixin
-from apipod.engine.backend.runpod.llm_mixin import _RunPodLLMMixin
+from apipod.engine.backend.schema_resolve import (
+    iter_media_chunks,
+    wrap_schema_response,
+)
 
 from apipod.engine.utils import normalize_name
 from apipod.common.settings import APIPOD_PROVIDER, APIPOD_PORT, DEFAULT_DATE_TIME_FORMAT
+from media_toolkit import AudioFile, VideoFile
 
 
-class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin):
+class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
     """
     Adds routing functionality for the runpod serverless framework.
     Provides enhanced file handling and conversion capabilities.
     """
     def __init__(self, title: str = "APIPod for ", summary: str = None, *args, **kwargs):
         super().__init__(title=title, summary=summary, *args, **kwargs)
-        _RunPodLLMMixin.__init__(self)
 
         self.routes = {}  # routes are organized like {"ROUTE_NAME": "ROUTE_FUNCTION"}
 
@@ -37,36 +41,25 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
         path = normalize_name(path, preserve_paths=True).strip("/")
 
         def decorator(func: Callable) -> Callable:
-            # 1. Auto-Detection
-            req_model, res_model, endpoint_type = self._get_llm_config(func)
+            # binding = get_schema_binding(func)
 
             @functools.wraps(func)
             def wrapper(*w_args, **w_kwargs):
                 self.status = constants.SERVER_HEALTH.BUSY
-                
                 try:
-                    if req_model:
-                        payload = w_kwargs.get("payload", None)
+                    # if binding is None:
+                    #    return self._execute_sync_or_async(func, w_args, w_kwargs)
 
-                        openai_req = self._prepare_llm_payload(
-                            req_model=req_model,
-                            payload=payload
-                        )
+                    # request = prepare_schema_call(binding, w_kwargs)
+                    result = self._execute_sync_or_async(func, w_args, w_kwargs)
 
-                        w_kwargs["payload"] = openai_req
+                    if getattr(request, "stream", False):
+                        if isinstance(result, (AudioFile, VideoFile)):
+                            return self._yield_native_stream(iter_media_chunks(result))
+                        if inspect.isgenerator(result) or inspect.isasyncgen(result):
+                            return self._yield_native_stream(result)
 
-                        return self.handle_llm_request(
-                            func=func,
-                            openai_req=openai_req,
-                            req_model=req_model,
-                            res_model=res_model,
-                            endpoint_type=endpoint_type,
-                            w_args=w_args,
-                            w_kwargs=w_kwargs
-                        )
-
-                    # Default execution for standard endpoints
-                    return self._execute_sync_or_async(func, w_args, w_kwargs)
+                    return wrap_schema_response(result, binding)
                 finally:
                     self.status = constants.SERVER_HEALTH.RUNNING
 
@@ -74,45 +67,34 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
             return wrapper
         return decorator
 
-    def _yield_native_stream(self, func, args, kwargs):
-        """Bridge for RunPod native generator streaming."""
+    @staticmethod
+    def _encode_stream_chunk(chunk) -> str:
+        """RunPod transports everything as JSON: binary chunks are base64-encoded."""
+        if isinstance(chunk, bytes):
+            return base64.b64encode(chunk).decode("ascii")
+        return chunk if isinstance(chunk, str) else str(chunk)
+
+    def _yield_native_stream(self, result):
+        """Bridge a stream result (sync/async generator or StreamingResponse) into RunPod's native stream."""
         from starlette.responses import StreamingResponse
-        
-        # Execute the function
-        result = self._execute_sync_or_async(func, args, kwargs)
-        
+
         # If it's a StreamingResponse (shouldn't happen in RunPod, but handle it)
         if isinstance(result, StreamingResponse):
-            body_iterator = result.body_iterator
-            
-            if inspect.isasyncgen(body_iterator):
-                while True:
-                    try:
-                        chunk = self._run_in_loop(body_iterator.__anext__())
-                        yield chunk if isinstance(chunk, (str, bytes)) else str(chunk)
-                    except StopAsyncIteration:
-                        break
-            else:
-                for chunk in body_iterator:
-                    yield chunk if isinstance(chunk, (str, bytes)) else str(chunk)
-            return
-        
-        # Handle async generators
+            result = result.body_iterator
+
         if inspect.isasyncgen(result):
             while True:
                 try:
-                    chunk = self._run_in_loop(result.__anext__())
-                    yield chunk if isinstance(chunk, (str, bytes)) else str(chunk)
+                    yield self._encode_stream_chunk(self._run_in_loop(result.__anext__()))
                 except StopAsyncIteration:
                     break
             return
-        
-        # Handle sync generators
-        if inspect.isgenerator(result):
+
+        if inspect.isgenerator(result) or hasattr(result, "__iter__"):
             for chunk in result:
-                yield chunk if isinstance(chunk, (str, bytes)) else str(chunk)
+                yield self._encode_stream_chunk(chunk)
             return
-        
+
         # Not a generator - shouldn't happen for streaming
         raise TypeError(f"Expected generator for streaming, got {type(result)}")
 
@@ -229,18 +211,18 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
     def _execute_route_function(self, route_function, kwargs):
         """
         Execute a route function, handling both sync and async functions.
-        
+
         Args:
             route_function: The function to execute
             kwargs: Keyword arguments to pass to the function
-            
+
         Returns:
             The result of the function execution
         """
         if not inspect.iscoroutinefunction(route_function):
             # Synchronous function - simple execution
             return route_function(**kwargs)
-        
+
         # Async function - need event loop handling
         try:
             loop = asyncio.get_event_loop()

@@ -3,9 +3,10 @@ from types import UnionType
 from typing import Any, Union, get_args, get_origin, Callable, List, Dict
 from apipod.engine.backend.fastapi.LimitedUploadFile import LimitedUploadFile
 from apipod.engine.signatures.upload import is_param_media_toolkit_file
-from apipod.engine.jobs.job_result import FileModel, ImageFileModel, AudioFileModel, VideoFileModel
+from apipod.common.schemas.media_files import FileModel, ImageFileModel, AudioFileModel, VideoFileModel
 from apipod.engine.signatures.policies import FastAPISignaturePolicies
 from apipod.engine.files.base_file_mixin import _BaseFileHandlingMixin
+from apipod.engine.endpoint_config import EndpointExecutionPlan
 from apipod.engine.utils import replace_func_signature
 from media_toolkit import MediaList, MediaDict, ImageFile, AudioFile, VideoFile, MediaFile
 import functools

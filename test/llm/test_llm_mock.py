@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 from typing import List, Union
 from datetime import datetime
 import time
-import json
 import uuid
 import random
 
@@ -14,13 +13,10 @@ from apipod import APIPod
 from apipod.common import schemas
 from fastapi import FastAPI
 
-# ============================================================================
-# Mock Model Wrapper
-# ============================================================================
 
 class MockModel:
     """A mock model that returns random strings to mimic an LLM."""
-    
+
     def __init__(self, model_name: str = "mock-model-v1"):
         print(f"Initializing Mock Model: {model_name}...")
         self.model_name = model_name
@@ -39,7 +35,7 @@ class MockModel:
         """Simulate non-streaming generation."""
         # Just pick a random response
         return random.choice(self.responses)
-    
+
     def stream_generate(self, messages: list, temperature: float = 0.7, max_tokens: int = 512):
         """Simulate streaming generation by yielding words."""
         response = random.choice(self.responses)
@@ -54,7 +50,7 @@ class MockModel:
         """Simulate embedding generation with random vectors."""
         if isinstance(texts, str):
             texts = [texts]
-        
+
         # Return random vectors of size 128
         return [[random.uniform(-1, 1) for _ in range(128)] for _ in texts]
 
@@ -89,11 +85,11 @@ def chat_logic(payload: schemas.ChatCompletionRequest):
         temperature=payload.temperature,
         max_tokens=payload.max_tokens or 512
     )
-    
+
     # Mock token counts
     prompt_tokens = sum(len(m.content.split()) for m in payload.messages) * 2
     completion_tokens = len(response_text.split()) * 2
-    
+
     return schemas.ChatCompletionResponse(
         id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
         object="chat.completion",

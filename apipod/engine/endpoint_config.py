@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from apipod.engine.backend.schema_resolve import SchemaBinding, get_schema_binding
+
 
 @dataclass(frozen=True)
 class EndpointExecutionPlan:
@@ -18,14 +20,12 @@ class EndpointExecutionPlan:
     queue_size: int
     route_args: tuple[Any, ...]
     route_kwargs: dict[str, Any]
-    request_model: type | None = None
-    response_model: type | None = None
-    endpoint_type: str | None = None
+    schema_binding: SchemaBinding | None = None
     is_streaming: bool = False
 
     @property
-    def is_llm(self) -> bool:
-        return self.request_model is not None
+    def is_schema_endpoint(self) -> bool:
+        return self.schema_binding is not None
 
     @property
     def active_methods(self) -> list[str]:
@@ -36,8 +36,8 @@ class FastApiEndpointConfigurator:
     """
     Builds endpoint execution plans for the FastAPI backend.
 
-    This component configures endpoint behavior (LLM, streaming, queue)
-    independent from provider mechanics (FastAPI routing).
+    This component configures endpoint behavior (schema dispatch, streaming,
+    queue) independent from provider mechanics (FastAPI routing).
     """
 
     def __init__(self, router):
@@ -55,8 +55,8 @@ class FastApiEndpointConfigurator:
         route_args: tuple[Any, ...],
         route_kwargs: dict[str, Any],
     ) -> EndpointExecutionPlan:
-        request_model, response_model, endpoint_type = self._router._get_llm_config(func)
-        is_streaming = bool(request_model is None and self._router._determine_generator_fun(func))
+        schema_binding = get_schema_binding(func)
+        is_streaming = bool(schema_binding is None and self._router._is_streaming_endpoint(func))
 
         return EndpointExecutionPlan(
             path=path,
@@ -66,8 +66,6 @@ class FastApiEndpointConfigurator:
             queue_size=queue_size,
             route_args=route_args,
             route_kwargs=route_kwargs,
-            request_model=request_model,
-            response_model=response_model,
-            endpoint_type=endpoint_type,
+            schema_binding=schema_binding,
             is_streaming=is_streaming,
         )

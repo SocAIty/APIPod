@@ -1,14 +1,14 @@
 """
-Minimal APIPod service used to verify media-file integration end to end for
-PR #15 (the 6 new Pydantic schemas).
+Minimal APIPod service used to verify media-file integration of the
+standardized schemas end to end.
 
 It exposes two endpoints:
-- POST /vision      uses VisionRequest, which has a REQUIRED image field
-- POST /audio       uses AudioRequest, which has an OPTIONAL audio field
+- POST /vision        uses VisionRequest, which has a REQUIRED image field
+- POST /transcribe    uses TranscriptionRequest, which has a REQUIRED audio field
 
 Both endpoints just inspect the incoming media file and echo back a few
-properties (size, content type, etc.) so we can confirm the file_handling
-mixin actually deserialized URL/base64 input into a real ImageFile/AudioFile.
+properties (size, content type, etc.) so we can confirm the file handling
+actually deserialized upload/URL/base64 input into a real ImageFile/AudioFile.
 
 Run with:
     python examples/test_service_six_schemas.py
@@ -16,10 +16,7 @@ The server starts on http://0.0.0.0:8000 with OpenAPI docs at /docs.
 """
 
 from apipod import APIPod
-from apipod.common.schemas import (
-    VisionRequest,
-    AudioRequest,
-)
+from apipod.common.schemas import TranscriptionRequest, VisionRequest
 
 
 app = APIPod()
@@ -38,10 +35,10 @@ def _media_summary(media) -> dict:
 
 
 @app.endpoint("/vision")
-def vision(payload: VisionRequest):
-    """Echoes a label built from payload.image. The point is that the image
+def vision(request: VisionRequest):
+    """Echoes a label built from request.image. The point is that the image
     arrived as an ImageFile, deserialized from upload / base64 / URL."""
-    summary = _media_summary(payload.image)
+    summary = _media_summary(request.image)
     return {
         "data": [
             {
@@ -52,17 +49,12 @@ def vision(payload: VisionRequest):
     }
 
 
-@app.endpoint("/audio")
-def audio(payload: AudioRequest):
-    """Echoes the audio properties (or text if no audio was sent)."""
-    if payload.audio is not None:
-        text = f"echo:{_media_summary(payload.audio)}"
-    else:
-        text = f"no-audio:text={payload.text!r}"
+@app.endpoint("/transcribe")
+def transcribe(request: TranscriptionRequest):
+    """Echoes the audio properties as the 'transcript'."""
     return {
-        "data": [
-            {"text": text, "language": payload.language, "duration_s": None}
-        ]
+        "text": f"echo:{_media_summary(request.audio)}",
+        "language": request.language,
     }
 
 

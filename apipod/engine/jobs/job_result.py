@@ -2,66 +2,14 @@ import gzip
 from io import BytesIO
 from typing import Any, List, Optional, Union
 
-from pydantic import BaseModel, AnyUrl
+from pydantic import BaseModel
 
 from apipod.common.settings import DEFAULT_DATE_TIME_FORMAT
 from apipod.engine.jobs.base_job import JOB_STATUS, BaseJob
 from apipod.engine.signatures.upload import is_param_media_toolkit_file
 from media_toolkit import IMediaContainer
 from media_toolkit.utils.data_type_utils import is_file_model_dict
-
-
-class FileModel(BaseModel):
-    file_name: str
-    content_type: str
-    content: Union[str, AnyUrl]  # base64 encoded or url
-    max_size_mb: Optional[float] = 4000
-
-    class Config:
-        json_schema_extra = {
-            "x-media-type": "MediaFile",
-            "example": {
-                "file_name": "example.csv",
-                "content_type": "text/csv",
-                "content": "https://example.com/example.csv",
-            }
-        }
-
-
-class ImageFileModel(FileModel):
-    class Config:
-        json_schema_extra = {
-            "x-media-type": "ImageFile",
-            "example": {
-                "file_name": "example.png",
-                "content_type": "image/png",
-                "content": "base64 encoded image data",
-            }
-        }
-
-
-class AudioFileModel(FileModel):
-    class Config:
-        json_schema_extra = {
-            "x-media-type": "AudioFile",
-            "example": {
-                "file_name": "example.mp3",
-                "content_type": "audio/mpeg",
-                "content": "base64 encoded audio data",
-            }
-        }
-
-
-class VideoFileModel(FileModel):
-    class Config:
-        json_schema_extra = {
-            "x-media-type": "VideoFile",
-            "example": {
-                "file_name": "example.mp4",
-                "content_type": "video/mp4",
-                "content": "base64 encoded video data",
-            }
-        }
+from apipod.common.schemas.media_files import FileModel
 
 
 def _job_status_to_public(status: Any) -> Optional[str]:
@@ -207,6 +155,11 @@ class JobResultFactory:
                 return FileModel(**data)
             except Exception:
                 pass
+
+        # Pydantic schema responses (e.g. SpeechResponse): dump to a dict and
+        # recurse so nested media files / FileModels serialize correctly too.
+        if isinstance(data, BaseModel):
+            return JobResultFactory._serialize_result(data.model_dump())
 
         if isinstance(data, list):
             return [JobResultFactory._serialize_result(item) for item in data]

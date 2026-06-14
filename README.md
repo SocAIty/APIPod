@@ -93,6 +93,52 @@ def transcribe(audio: AudioFile):
     return {"transcription": "..."}
 ```
 
+### 🤖 Standardized AI schemas (OpenAI-compatible)
+
+APIPod ships request/response schemas for the common AI payloads: chat, completions, embeddings, image/video/3D generation, vision, transcription, text-to-speech and voice cloning. Annotate one parameter with a request schema and APIPod handles validation, media parsing, response wrapping and streaming. The wire format mirrors the OpenAI API, so OpenAI-compatible clients work out of the box. `model` is optional everywhere — your service usually *is* the model.
+
+**Chat** — return a plain string (or a dict / full response object) and get a complete `chat.completion` envelope. Return a generator and `"stream": true` requests receive server-sent events:
+
+```python
+from apipod import APIPod
+from apipod.common.schemas import ChatCompletionRequest
+
+app = APIPod()
+
+@app.endpoint("/chat")
+def chat(request: ChatCompletionRequest):
+    answer = my_llm.generate(request.messages, temperature=request.temperature)
+    return answer  # auto-wrapped into a ChatCompletionResponse
+```
+
+**Text-to-speech** — return an `AudioFile`; clients get a JSON envelope with the audio as base64, or raw audio chunks when they send `"stream": true`:
+
+```python
+from apipod import AudioFile
+from apipod.common.schemas import SpeechRequest
+
+@app.endpoint("/audio/speech")
+def speak(request: SpeechRequest):
+    # request.voice is a named voice (str) or an already-parsed AudioFile for cloning
+    samples, rate = my_tts.synthesize(request.input, voice=request.voice)
+    return AudioFile().from_np_array(samples, sample_rate=rate, audio_format="wav")
+```
+
+**Image generation** — media fields inside schemas (e.g. `request.image` for img2img) arrive as parsed media-toolkit objects, no matter if the client sent an upload, URL or base64:
+
+```python
+from apipod import ImageFile
+from apipod.common.schemas import ImageGenerationRequest
+
+@app.endpoint("/images/generations")
+def generate(request: ImageGenerationRequest):
+    init_image = request.image.to_np_array() if request.image else None  # ImageFile, ready to use
+    result = my_model.generate(request.prompt, image=init_image, seed=request.seed)
+    return ImageFile().from_np_array(result)  # auto-wrapped into ImageGenerationResponse
+```
+
+Need extra parameters? Subclass a schema (`class MyRequest(SpeechRequest): style: str = "calm"`) — detection and wrapping keep working.
+
 ### ☁️ Serverless Routing
 When deploying to serverless platforms like **RunPod**, standard web frameworks often fail because they lack the necessary routing logic for the platform's specific entry points. **APIPod** detects the environment and handles the routing automatically—no separate "handler" function required.
 
@@ -184,9 +230,9 @@ The configuration is controlled through a combination of:
 | ---------------- | ------------ | ----------- | --------------------------------- |
 | `socaity`        | `dedicated`  | `auto`      | FastAPI                           |
 | `socaity`        | `dedicated`  | `localhost` | FastAPI + job queue *(test  mode)* |
-| `socaity`        | `dedicated`  | `runpod`    | Celery backend *(planned)*        |
-| `socaity`        | `dedicated`  | `scaleway`  | Celery backend *(planned)*        |
-| `socaity`        | `dedicated`  | `azure`     | Celery backend *(planned)*        |
+| `socaity`        | `dedicated`  | `runpod`    | FastAPI + load balancer *(Coming soon)*        |
+| `socaity`        | `dedicated`  | `scaleway`  | FastAPI *(Coming soon)*        |
+| `socaity`        | `dedicated`  | `azure`     | FastAPI *(Coming soon)*        |
 | `socaity`        | `serverless` | `auto`      | RunPod router backend             |
 | `socaity`        | `serverless` | `localhost` | FastAPI + job queue *(test mode)* |
 | `socaity`        | `serverless` | `runpod`    | RunPod router backend             |
@@ -299,7 +345,6 @@ result = task.get_result()
 
 ## Roadmap
 - MCP protocol support.
-- OpenAI-compatible default endpoints for LLMs
 - Improve async support.
 
 ---

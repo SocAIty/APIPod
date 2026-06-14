@@ -3,7 +3,8 @@ import inspect
 import threading
 import logging
 from contextlib import asynccontextmanager
-from typing import Union, Callable, get_type_hints, Generator, AsyncGenerator, Iterator, AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from typing import Any, Union, Callable, get_origin, get_type_hints
 from fastapi import APIRouter, FastAPI, Request, Response, status
 from fastapi.exceptions import HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -17,10 +18,16 @@ from apipod.engine.queue.queue_mixin import _QueueMixin
 from apipod.engine.backend.fastapi.file_handling_mixin import _fast_api_file_handling_mixin
 from apipod.engine.utils import normalize_name
 from apipod.engine.backend.fastapi.exception_handling import _FastAPIExceptionHandler
-from apipod.engine.backend.fastapi.llm_mixin import _FastApiLlmMixin
+from apipod.engine.backend.schema_resolve import (
+    SchemaBinding,
+    SSE_STREAM_TAGS,
+    iter_media_chunks,
+    wrap_schema_response,
+)
+from media_toolkit import AudioFile, VideoFile
 
 
-class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_handling_mixin, _FastAPIExceptionHandler, _FastApiLlmMixin):
+class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_handling_mixin, _FastAPIExceptionHandler):
     """
     FastAPI router extension that adds support for task endpoints.
 
@@ -69,7 +76,6 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         _BaseBackend.__init__(self, title=title, summary=summary, *args, **kwargs)
         _QueueMixin.__init__(self, job_queue=job_queue, *args, **kwargs)
         _fast_api_file_handling_mixin.__init__(self, max_upload_file_size_mb=max_upload_file_size_mb, *args, **kwargs)
-        _FastApiLlmMixin.__init__(self)
 
         self.status = SERVER_HEALTH.INITIALIZING
 
@@ -296,12 +302,11 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             },
         )
 
-
     def endpoint(self, path: str, methods: list[str] | None = None, max_upload_file_size_mb: int = None, queue_size: int = 500, use_queue: bool = None, *args, **kwargs):
         """
         Unified endpoint decorator.
 
-        If LLM configuration is detected on the function, it creates an LLM endpoint.
+        If a parameter is annotated with a standardized request schema, it creates a schema endpoint.
 
         If job_queue is configured (and use_queue is not False), it creates a task endpoint.
         Otherwise, it creates a standard FastAPI endpoint.
@@ -328,33 +333,12 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
                 route_kwargs=kwargs
             )
 
-            if plan.is_llm:
-                return self._register_llm_endpoint(func, plan)
             if plan.is_streaming:
-                return self._create_streaming_endpoint_decorator(
-                    path=plan.path,
-                    methods=plan.methods,
-                    max_upload_file_size_mb=plan.max_upload_file_size_mb,
-                    args=plan.route_args,
-                    kwargs=plan.route_kwargs
-                )(func)
+                return self._create_streaming_endpoint_decorator(plan)(func)
             if plan.should_use_queue:
-                return self._create_task_endpoint_decorator(
-                    path=plan.path,
-                    methods=plan.methods,
-                    max_upload_file_size_mb=plan.max_upload_file_size_mb,
-                    queue_size=plan.queue_size,
-                    args=plan.route_args,
-                    kwargs=plan.route_kwargs
-                )(func)
+                return self._create_task_endpoint_decorator(plan)(func)
 
-            return self._create_standard_endpoint_decorator(
-                path=plan.path,
-                methods=plan.methods,
-                max_upload_file_size_mb=plan.max_upload_file_size_mb,
-                args=plan.route_args,
-                kwargs=plan.route_kwargs
-            )(func)
+            return self._create_standard_endpoint_decorator(plan)(func)
 
         return decorator
 
@@ -381,62 +365,6 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             route_args=route_args,
             route_kwargs=route_kwargs,
         )
-
-    def _register_llm_endpoint(self, func: Callable, plan: EndpointExecutionPlan) -> Callable:
-        """Register a FastAPI LLM endpoint from an endpoint execution plan."""
-        req_model = plan.request_model
-        res_model = plan.response_model
-        endpoint_type = plan.endpoint_type
-
-        if req_model is None or res_model is None or endpoint_type is None:
-            raise ValueError("Invalid LLM endpoint plan: missing request/response metadata")
-
-        if plan.should_use_queue:
-            try:
-                self._job_func_registry[func.__name__] = func
-            except Exception:
-                pass
-
-        @functools.wraps(func)
-        async def _unified_worker(*w_args, **w_kwargs):
-            payload = next(
-                (v for v in w_kwargs.values() if isinstance(v, (dict, req_model))),
-                next((a for a in w_args if isinstance(a, (dict, req_model))), None)
-            )
-
-            if payload is None:
-                raise ValueError(f"Request does not match expected model {req_model}")
-
-            clean_kwargs = {k: v for k, v in w_kwargs.items() if not isinstance(v, req_model)}
-            openai_req = self._prepare_llm_payload(req_model=req_model, payload=payload)
-
-            return await self.handle_llm_request(
-                func=func,
-                openai_req=openai_req,
-                should_use_queue=plan.should_use_queue,
-                res_model=res_model,
-                endpoint_type=endpoint_type,
-                **clean_kwargs
-            )
-
-        final_handler = self._prepare_func_for_media_file_upload_with_fastapi(
-            _unified_worker,
-            plan.max_upload_file_size_mb
-        )
-
-        route_kwargs = dict(plan.route_kwargs)
-        if plan.should_use_queue:
-            route_kwargs["response_model_exclude_none"] = True
-
-        self.api_route(
-            path=plan.path,
-            methods=plan.active_methods,
-            response_model=JobResult if plan.should_use_queue else res_model,
-            *plan.route_args,
-            **route_kwargs
-        )(final_handler)
-
-        return final_handler
     
     async def _execute_func(self, func, **kwargs):
         """
@@ -445,7 +373,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         Args:
             func: Function to execute
             **kwargs: Arguments to pass to function
-            
+
         Returns:
             Result of function execution
         """
@@ -460,15 +388,15 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
     async def _stream_generator(self, result):
         """
         Convert a sync or async generator into an async generator for StreamingResponse.
-        
+
         Args:
             result: Generator (sync or async) that yields streaming chunks
-            
+
         Yields:
             Streaming chunks as strings or bytes
         """
         import asyncio
-        
+
         if inspect.isasyncgen(result):
             # Async generator - yield directly
             async for chunk in result:
@@ -507,62 +435,88 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             return use_queue
 
         return self.job_queue is not None
-    
-    def _determine_generator_fun(self, func: Callable) -> bool:
+
+    def _is_streaming_endpoint(self, func: Callable) -> bool:
         """
-        Determine whether the function is streaming data.
-        Uses quick, robust checks for common streaming patterns.
+        Determine whether the function streams its output: it is a (async)
+        generator function, or its return annotation declares an iterator.
         """
-        # 1. Direct generator functions
-        if inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(func):
+        target = inspect.unwrap(func)
+        if inspect.isgeneratorfunction(target) or inspect.isasyncgenfunction(target):
             return True
 
-        # 2. Check return type hints
         try:
-            hints = get_type_hints(func)
-            return_type = hints.get('return')
-
-            if return_type is not None:
-                origin = getattr(return_type, '__origin__', return_type)
-                streaming_types = (Generator, AsyncGenerator, Iterator, AsyncIterator)
-
-                if origin in streaming_types or return_type in streaming_types:
-                    return True
+            return_type = get_type_hints(target).get('return')
         except Exception:
-            pass
+            return False
 
-        # 3. Check source code for yield keyword
-        try:
-            source = inspect.getsource(func)
-            if 'yield' in source:
-                return True
-        except Exception:
-            pass
+        if return_type is None:
+            return False
 
-        return False
+        origin = get_origin(return_type) or return_type
+        return inspect.isclass(origin) and issubclass(origin, (Iterator, AsyncIterator))
 
-    def _create_task_endpoint_decorator(self, path: str, methods: list[str] | None, max_upload_file_size_mb: int, queue_size: int, args, kwargs):
+    def _as_streaming_response(self, result: Any, binding: SchemaBinding) -> StreamingResponse | None:
+        """
+        Build a :class:`StreamingResponse` if the endpoint result is streamable:
+        - ``AudioFile`` / ``VideoFile`` stream their encoded bytes as raw chunks
+          with the proper media content type (OpenAI ``stream_format="audio"``);
+        - generators stream as-is: SSE for token-delta endpoints, raw bytes else.
+        Returns ``None`` when the result cannot be streamed.
+        """
+        if isinstance(result, (AudioFile, VideoFile)):
+            media_type = getattr(result, "content_type", None) or "application/octet-stream"
+            return StreamingResponse(iter_media_chunks(result), media_type=media_type)
+
+        if inspect.isgenerator(result) or inspect.isasyncgen(result):
+            media_type = "text/event-stream" if binding.tag in SSE_STREAM_TAGS else "application/octet-stream"
+            return StreamingResponse(
+                self._stream_generator(result),
+                media_type=media_type,
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Endpoint decorators (task / standard / streaming)
+    # ------------------------------------------------------------------
+    def _modify_result_decorator(self, func: Callable, plan: EndpointExecutionPlan) -> Callable:
+        """
+        Wraps responses of schema endpoints to their given Response format.
+        Serializes media-files to and other objects to JSON
+        """
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            result = func(*args, **kwargs)
+            if plan.schema_binding is not None:
+                result = wrap_schema_response(result, plan.schema_binding)
+            return JobResultFactory._serialize_result(result)
+        return sync_wrapper
+
+    def _create_task_endpoint_decorator(self, plan: EndpointExecutionPlan):
         """Create a decorator for task endpoints (background job execution)."""
         # FastAPI route decorator (returning JobResult)
-        task_kwargs = dict(kwargs)
+        task_kwargs = dict(plan.route_kwargs)
         task_kwargs["response_model_exclude_none"] = True
         fastapi_route_decorator = self.api_route(
-            path=path,
-            methods=["POST"] if methods is None else methods,
+            path=plan.path,
+            methods=plan.active_methods,
             response_model=JobResult,
-            *args,
+            *plan.route_args,
             **task_kwargs
         )
 
         # Queue decorator
         queue_decorator = super().job_queue_func(
-            path=path,
-            queue_size=queue_size,
-            *args,
-            **kwargs
+            path=plan.path,
+            queue_size=plan.queue_size,
+            *plan.route_args,
+            **plan.route_kwargs
         )
 
         def decorator(func: Callable) -> Callable:
+            func = self._modify_result_decorator(func, plan)
             # Add job queue functionality and prepare for FastAPI file handling
             queue_decorated = queue_decorator(func)
             # Register the function so workers can execute it (dev mode).
@@ -570,47 +524,38 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
                 self._job_func_registry[func.__name__] = func
             except Exception:
                 pass
-            upload_enabled = self._prepare_func_for_media_file_upload_with_fastapi(queue_decorated, max_upload_file_size_mb)
+        
+            upload_enabled = self._prepare_func_for_media_file_upload_with_fastapi(queue_decorated, plan.max_upload_file_size_mb)
             return fastapi_route_decorator(upload_enabled)
 
         return decorator
 
-    def _create_standard_endpoint_decorator(self, path: str, methods: list[str] | None, max_upload_file_size_mb: int, args, kwargs):
-        """Create a decorator for standard endpoints (direct execution)."""
-        # FastAPI route decorator
+    def _create_standard_endpoint_decorator(self, plan: EndpointExecutionPlan):
+        """Create a decorator for standard and schema endpoints (direct execution)."""
         fastapi_route_decorator = self.api_route(
-            path=path,
-            methods=["POST"] if methods is None else methods,
-            *args,
-            **kwargs
+            path=plan.path,
+            methods=plan.active_methods,
+            response_model=plan.schema_binding.response_model if plan.is_schema_endpoint else None,
+            *plan.route_args,
+            **plan.route_kwargs
         )
 
-        def file_result_modification_decorator(func: Callable) -> Callable:
-            """Wrap endpoint result and serialize it."""
-            @functools.wraps(func)
-            def sync_wrapper(*args, **kwargs):
-                result = func(*args, **kwargs)
-                return JobResultFactory._serialize_result(result)
-            return sync_wrapper
-
         def decorator(func: Callable) -> Callable:
-            result_modified = file_result_modification_decorator(func)
-            with_file_upload_signature = self._prepare_func_for_media_file_upload_with_fastapi(result_modified, max_upload_file_size_mb)
+            result_modified = self._modify_result_decorator(func, plan)
+            with_file_upload_signature = self._prepare_func_for_media_file_upload_with_fastapi(result_modified, plan.max_upload_file_size_mb)
             return fastapi_route_decorator(with_file_upload_signature)
 
         return decorator
 
-    def _create_streaming_endpoint_decorator(self, path: str, methods: list[str] | None, max_upload_file_size_mb: int, args, kwargs):
+    def _create_streaming_endpoint_decorator(self, plan: EndpointExecutionPlan):
         """Create a decorator for streaming endpoints."""
-        from fastapi.responses import StreamingResponse
-
-        # Extract custom headers if provided
+        kwargs = dict(plan.route_kwargs)
         custom_headers = kwargs.pop('response_headers', None)
 
         fastapi_route_decorator = self.api_route(
-            path=path,
-            methods=["POST"] if methods is None else methods,
-            *args,
+            path=plan.path,
+            methods=plan.active_methods,
+            *plan.route_args,
             **kwargs
         )
 
@@ -620,21 +565,13 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
                 result = await self._execute_func(func, *w_args, **w_kwargs)
                 generator = self._stream_generator(result)
 
-                # Merge default and custom headers
-                headers = {
-                    "Cache-Control": "no-cache",
-                    "X-Accel-Buffering": "no"
-                }
+                headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
                 if custom_headers:
                     headers.update(custom_headers)
 
-                return StreamingResponse(
-                    generator,
-                    media_type="text/event-stream",
-                    headers=headers
-                )
+                return StreamingResponse(generator, media_type="text/event-stream", headers=headers)
 
-            with_file_upload_signature = self._prepare_func_for_media_file_upload_with_fastapi(streaming_wrapper, max_upload_file_size_mb)
+            with_file_upload_signature = self._prepare_func_for_media_file_upload_with_fastapi(streaming_wrapper, plan.max_upload_file_size_mb)
             return fastapi_route_decorator(with_file_upload_signature)
 
         return decorator

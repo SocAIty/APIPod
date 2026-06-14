@@ -8,26 +8,15 @@ the wire format; it does NOT imply the schemas are tied to OpenAI's own
 models. Any provider (Flux, Stable Diffusion, ElevenLabs, Whisper, Suno,
 DeepSeek, etc.) plugs into the same schemas and the routing layer
 dispatches to whatever runs behind it.
+
+`model` is optional on every request: an APIPod service typically serves
+exactly one model, so forcing clients to repeat its name adds nothing.
 """
 
-from types import UnionType
-from typing import Any, List, Literal, Optional, Union, get_args, get_origin
-from pydantic import BaseModel, Field, model_validator
+from typing import Any, List, Literal, Optional, Union
+from pydantic import BaseModel, Field
 
-from media_toolkit import AudioFile, ImageFile, MediaFile, VideoFile, media_from_any
-
-_MEDIA_FIELD_TYPES = (ImageFile, AudioFile, VideoFile, MediaFile)
-
-
-def _media_field_type(annotation: Any) -> Optional[type]:
-    """Media class if annotation is media-typed (bare, Optional, or Union), else None."""
-    if annotation in _MEDIA_FIELD_TYPES:
-        return annotation
-    if get_origin(annotation) in (Union, UnionType):
-        for arg in get_args(annotation):
-            if arg in _MEDIA_FIELD_TYPES:
-                return arg
-    return None
+from .media_files import FileModel, ImageFileModel, AudioFileModel, VideoFileModel, ThreeDFileModel
 
 
 # =====================================================
@@ -42,46 +31,25 @@ class APIPodSchemaBase(BaseModel):
     out of the box, but the schemas are provider-agnostic: anything that
     matches the shape (Flux, SD, ElevenLabs, Whisper, in-house models...)
     is a valid backend.
+
+    Media fields are declared with the FileModel variants (ImageFileModel,
+    AudioFileModel, ...) which accept uploads, FileModel JSON objects, URLs
+    and base64 strings. At runtime the file-handling layer replaces them
+    with parsed media-toolkit objects before the endpoint function runs.
     """
 
     model_config = {
         "extra": "forbid",
         "validate_assignment": True,
         "populate_by_name": True,
-        # ImageFile / AudioFile / VideoFile / MediaFile are non-BaseModel types
-        # used as field annotations; the pre-validator below converts URL /
-        # base64 strings into instances before per-field validation.
-        "arbitrary_types_allowed": True,
+        "arbitrary_types_allowed": True
     }
-
-    @model_validator(mode="before")
-    @classmethod
-    def _convert_media_strings(cls, data: Any) -> Any:
-        """URL / data URI through media_from_any, bare base64 through from_base64."""
-        if not isinstance(data, dict):
-            return data
-        for field_name, field_info in cls.model_fields.items():
-            if field_name not in data:
-                continue
-            value = data[field_name]
-            if not isinstance(value, str):
-                continue
-            media_type = _media_field_type(field_info.annotation)
-            if media_type is None:
-                continue
-            data[field_name] = media_from_any(
-                data=value,
-                type_hint=media_type,
-                use_temp_file=True,
-                temp_dir=None,
-                allow_reads_from_disk=False,
-            )
-        return data
 
 
 # =====================================================
 # Chat Completions - Input schemas
 # =====================================================
+
 
 class ChatMessage(APIPodSchemaBase):
     role: Literal["system", "user", "assistant"] = Field(description="The role of the message author (system, user, or assistant).")
@@ -89,8 +57,8 @@ class ChatMessage(APIPodSchemaBase):
 
 
 class ChatCompletionRequest(APIPodSchemaBase):
-    model: str = Field(description="ID of the model to use for this request.")
     messages: List[ChatMessage] = Field(description="A list of messages comprising the conversation history.")
+    model: Optional[str] = Field(default=None, description="ID of the model to use. Optional: an APIPod service usually serves exactly one model.")
 
     temperature: float = Field(default=0.7, description="Sampling temperature between 0.0 and 2.0. Higher values make output more random.")
     max_tokens: Optional[int] = Field(default=None, description="The maximum number of tokens to generate in the completion.")
@@ -108,8 +76,8 @@ class ChatCompletionRequest(APIPodSchemaBase):
 # =====================================================
 
 class CompletionRequest(APIPodSchemaBase):
-    model: str = Field(description="ID of the model to use for this request.")
     prompt: Union[str, List[str]] = Field(description="The prompt(s) to generate completions for.")
+    model: Optional[str] = Field(default=None, description="ID of the model to use. Optional: an APIPod service usually serves exactly one model.")
 
     temperature: float = Field(default=0.7, description="Sampling temperature between 0.0 and 2.0.")
     max_tokens: int = Field(default=16, description="The maximum number of tokens to generate.")
@@ -124,8 +92,8 @@ class CompletionRequest(APIPodSchemaBase):
 # =====================================================
 
 class EmbeddingRequest(APIPodSchemaBase):
-    model: str = Field(description="ID of the model to use for generating embeddings.")
     input: Union[str, List[str]] = Field(description="The input text to embed.")
+    model: Optional[str] = Field(default=None, description="ID of the model to use. Optional: an APIPod service usually serves exactly one model.")
     user: Optional[str] = Field(default=None, description="A unique identifier representing your end-user.")
 
 
@@ -134,12 +102,12 @@ class EmbeddingRequest(APIPodSchemaBase):
 # =====================================================
 
 class ImageGenerationRequest(APIPodSchemaBase):
-    model: str = Field(description="ID of the model to use for image generation.")
     prompt: str = Field(description="A text description of the desired image(s).")
+    model: Optional[str] = Field(default=None, description="ID of the model to use. Optional: an APIPod service usually serves exactly one model.")
 
     negative_prompt: Optional[str] = Field(default=None, description="A text description of what to exclude from the generated image.")
-    image: Optional[ImageFile] = Field(default=None, description="An optional reference image for image-to-image or inpainting tasks.")
-    mask: Optional[ImageFile] = Field(default=None, description="An optional mask image for inpainting, where white pixels indicate areas to edit.")
+    image: Optional[ImageFileModel] = Field(default=None, description="An optional reference image for image-to-image or inpainting tasks.")
+    mask: Optional[ImageFileModel] = Field(default=None, description="An optional mask image for inpainting, where white pixels indicate areas to edit.")
     size: Optional[str] = Field(default=None, description="The size of the generated images, e.g. 1024x1024.")
     num_images: int = Field(default=1, description="The number of images to generate.")
     seed: Optional[int] = Field(default=None, description="Random seed for reproducible generation.")
@@ -151,29 +119,61 @@ class ImageGenerationRequest(APIPodSchemaBase):
 # =====================================================
 
 class VideoGenerationRequest(APIPodSchemaBase):
-    model: str = Field(description="ID of the model to use for video generation.")
     prompt: str = Field(description="A text description of the desired video.")
+    model: Optional[str] = Field(default=None, description="ID of the model to use. Optional: an APIPod service usually serves exactly one model.")
 
-    image: Optional[ImageFile] = Field(default=None, description="An optional reference image (frame0) to start the video from.")
+    image: Optional[ImageFileModel] = Field(default=None, description="An optional reference image (frame0) to start the video from.")
     duration_s: float = Field(default=5.0, description="The desired duration of the video in seconds.")
     fps: int = Field(default=24, description="Frames per second for the generated video.")
     aspect_ratio: Optional[str] = Field(default=None, description="The aspect ratio of the generated video, e.g. 16:9.")
     seed: Optional[int] = Field(default=None, description="Random seed for reproducible generation.")
+    stream: bool = Field(default=False, description="If set, the generated video is streamed back as raw bytes instead of a JSON response.")
 
 
 # =====================================================
-# Audio - Input schemas (TTS, STT, music)
+# Audio - Input schemas (transcription, speech, voices)
 # =====================================================
 
-class AudioRequest(APIPodSchemaBase):
-    model: str = Field(description="ID of the model to use for audio tasks (TTS, STT, or music).")
+class TranscriptionRequest(APIPodSchemaBase):
+    """Speech-to-text. Mirrors OpenAI POST /audio/transcriptions ('file' is called 'audio' here)."""
 
-    text: Optional[str] = Field(default=None, description="The input text for text-to-speech or music generation.")
-    audio: Optional[AudioFile] = Field(default=None, description="The input audio file for speech-to-text tasks.")
-    voice: Optional[str] = Field(default=None, description="The voice ID or style to use for audio generation.")
-    language: Optional[str] = Field(default=None, description="The language of the input audio (for STT) or target language (for TTS).")
-    format: Optional[str] = Field(default=None, description="The desired output audio format, e.g. mp3, wav, flac.")
-    duration_s: Optional[float] = Field(default=None, description="The desired duration of the generated audio in seconds.")
+    audio: AudioFileModel = Field(description="The audio file to transcribe. Accepts uploads, FileModel objects, URLs or base64.")
+    model: Optional[str] = Field(default=None, description="ID of the model to use. Optional: only specify if you serve multiple models.")
+
+    language: Optional[str] = Field(default=None, description="The language of the input audio in ISO-639-1 format (e.g. 'en'). Improves accuracy and latency.")
+    prompt: Optional[str] = Field(default=None, description="Optional text to guide the model's style or to continue a previous audio segment.")
+    response_format: Literal["json", "verbose_json"] = Field(default="json", description="Format of the transcript output.")
+    timestamp_granularities: Optional[List[Literal["word", "segment"]]] = Field(default=None, description="Timestamp detail to include; requires response_format='verbose_json'.")
+    stream: bool = Field(default=False, description="If set, partial transcript deltas will be sent as server-sent events.")
+
+
+class SpeechRequest(APIPodSchemaBase):
+    """Text-to-speech. Mirrors OpenAI POST /audio/speech."""
+
+    input: str = Field(description="The text to generate audio for.")
+    voice: Optional[Union[str, AudioFileModel]] = Field(default=None, description="A named voice of the service OR a reference audio / voice embedding file for voice cloning.")
+    model: Optional[str] = Field(default=None, description="ID of the model to use. Optional: an APIPod service usually serves exactly one model.")
+
+    instructions: Optional[str] = Field(default=None, description="Additional instructions to control voice, emotion or style.")
+    response_format: Literal["mp3", "wav", "opus", "flac", "pcm"] = Field(default="mp3", description="The desired output audio format.")
+    speed: float = Field(default=1.0, description="Playback speed of the generated audio (0.25 to 4.0).")
+    stream: bool = Field(default=False, description="If set, the generated audio is streamed back as raw audio chunks instead of a JSON response.")
+
+
+class CreateVoiceRequest(APIPodSchemaBase):
+    """Voice cloning: create a reusable voice (embedding) from an audio sample. Mirrors OpenAI POST /audio/voices."""
+
+    name: str = Field(description="A name for the new voice.")
+    audio_sample: AudioFileModel = Field(description="A clean speech sample (~5-20s) of the voice to clone.")
+    model: Optional[str] = Field(default=None, description="ID of the model to use. Optional: an APIPod service usually serves exactly one model.")
+
+
+class VoiceConversionRequest(APIPodSchemaBase):
+    """Voice-to-voice: re-render existing audio with another voice (named, sample or embedding)."""
+
+    audio: AudioFileModel = Field(description="The audio whose content should be kept.")
+    voice: Union[str, AudioFileModel] = Field(description="The target voice: a named voice of the service OR a reference audio / voice embedding file.")
+    model: Optional[str] = Field(default=None, description="ID of the model to use. Optional: an APIPod service usually serves exactly one model.")
 
 
 # =====================================================
@@ -181,10 +181,10 @@ class AudioRequest(APIPodSchemaBase):
 # =====================================================
 
 class Generation3DRequest(APIPodSchemaBase):
-    model: str = Field(description="ID of the model to use for 3D generation.")
+    model: Optional[str] = Field(default=None, description="ID of the model to use. Optional: an APIPod service usually serves exactly one model.")
 
     prompt: Optional[str] = Field(default=None, description="A text description of the 3D object to generate.")
-    image: Optional[ImageFile] = Field(default=None, description="An optional reference image to generate the 3D object from.")
+    image: Optional[ImageFileModel] = Field(default=None, description="An optional reference image to generate the 3D object from.")
     output_format: str = Field(default="glb", description="The desired 3D output format (glb, obj, fbx, etc.).")
     seed: Optional[int] = Field(default=None, description="Random seed for reproducible generation.")
 
@@ -194,8 +194,8 @@ class Generation3DRequest(APIPodSchemaBase):
 # =====================================================
 
 class VisionRequest(APIPodSchemaBase):
-    model: str = Field(description="ID of the model to use for vision tasks (OCR, detection, etc.).")
-    image: ImageFile = Field(description="The image to process for vision tasks.")
+    image: ImageFileModel = Field(description="The image to process for vision tasks.")
+    model: Optional[str] = Field(default=None, description="ID of the model to use. Optional: an APIPod service usually serves exactly one model.")
 
     labels: Optional[List[str]] = Field(default=None, description="Optional list of labels to look for (e.g. for object detection).")
     threshold: Optional[float] = Field(default=None, description="Confidence threshold for detection or classification.")
@@ -207,27 +207,12 @@ class VisionRequest(APIPodSchemaBase):
 # =====================================================
 
 class MultimodalEmbeddingRequest(APIPodSchemaBase):
-    model: str = Field(description="ID of the model to use for generating multimodal embeddings.")
+    model: Optional[str] = Field(default=None, description="ID of the model to use. Optional: an APIPod service usually serves exactly one model.")
 
     input: Optional[Union[str, List[str]]] = Field(default=None, description="The input text to embed.")
-    image: Optional[ImageFile] = Field(default=None, description="The input image to embed.")
-    audio: Optional[AudioFile] = Field(default=None, description="The input audio to embed.")
+    image: Optional[ImageFileModel] = Field(default=None, description="The input image to embed.")
+    audio: Optional[AudioFileModel] = Field(default=None, description="The input audio to embed.")
     user: Optional[str] = Field(default=None, description="A unique identifier representing your end-user.")
-
-
-# Supported request schemas that should be interpreted as JSON bodies
-# by router decorators, even when endpoint authors do not specify Body(...).
-SUPPORTED_LLM_REQUEST_SCHEMAS = (
-    ChatCompletionRequest,
-    CompletionRequest,
-    EmbeddingRequest,
-    ImageGenerationRequest,
-    VideoGenerationRequest,
-    AudioRequest,
-    Generation3DRequest,
-    VisionRequest,
-    MultimodalEmbeddingRequest,
-)
 
 
 # =====================================================
@@ -245,7 +230,7 @@ class Usage(APIPodSchemaBase):
 # =====================================================
 
 class ChatCompletionMessage(APIPodSchemaBase):
-    role: Literal["assistant"] = Field(description="The role of the message author, always 'assistant'.")
+    role: Literal["assistant"] = Field(default="assistant", description="The role of the message author, always 'assistant'.")
     content: str = Field(description="The content of the message.")
 
 
@@ -256,12 +241,11 @@ class ChatCompletionChoice(APIPodSchemaBase):
 
 
 class ChatCompletionResponse(APIPodSchemaBase):
-    id: str = Field(description="Unique identifier for the chat completion.")
-    object: Literal["chat.completion"] = Field(description="The object type, always 'chat.completion'.")
+    object: Literal["chat.completion"] = Field(default="chat.completion", description="The object type, always 'chat.completion'.")
     created: int = Field(description="The Unix timestamp when the chat completion was created.")
-    model: str = Field(description="The model used for the chat completion.")
+    model: Optional[str] = Field(default=None, description="The model used for the chat completion.")
     choices: List[ChatCompletionChoice] = Field(description="A list of chat completion choices.")
-    usage: Usage = Field(description="Usage statistics for the completion request.")
+    usage: Optional[Usage] = Field(default=None, description="Usage statistics for the completion request.")
 
 
 # =====================================================
@@ -269,19 +253,18 @@ class ChatCompletionResponse(APIPodSchemaBase):
 # =====================================================
 
 class CompletionChoice(APIPodSchemaBase):
-    text: str
-    index: int
+    text: str = Field(description="The generated completion text.")
+    index: int = Field(description="The index of the choice in the list of choices.")
     logprobs: None = None
-    finish_reason: Literal["stop", "length", "content_filter"]
+    finish_reason: Literal["stop", "length", "content_filter"] = Field(description="The reason the model stopped generating tokens.")
 
 
 class CompletionResponse(APIPodSchemaBase):
-    id: str
-    object: Literal["text_completion"]
-    created: int
-    model: str
-    choices: List[CompletionChoice]
-    usage: Usage
+    object: Literal["text_completion"] = Field(default="text_completion", description="The object type, always 'text_completion'.")
+    created: int = Field(description="The Unix timestamp when the completion was created.")
+    model: Optional[str] = Field(default=None, description="The model used for the completion.")
+    choices: List[CompletionChoice] = Field(description="A list of completion choices.")
+    usage: Optional[Usage] = Field(default=None, description="Usage statistics for the completion request.")
 
 
 # =====================================================
@@ -289,35 +272,27 @@ class CompletionResponse(APIPodSchemaBase):
 # =====================================================
 
 class EmbeddingData(APIPodSchemaBase):
-    object: Literal["embedding"]
-    embedding: List[float]
-    index: int
+    object: Literal["embedding"] = Field(default="embedding", description="The object type, always 'embedding'.")
+    embedding: List[float] = Field(description="The embedding vector.")
+    index: int = Field(description="The index of the embedding in the list of inputs.")
 
 
 class EmbeddingResponse(APIPodSchemaBase):
-    object: Literal["list"]
-    data: List[EmbeddingData]
-    model: str
-    usage: Usage
+    object: Literal["list"] = Field(default="list", description="The object type, always 'list'.")
+    data: List[EmbeddingData] = Field(description="The list of embedding data objects.")
+    model: Optional[str] = Field(default=None, description="The model used for generating embeddings.")
+    usage: Optional[Usage] = Field(default=None, description="Token usage information, if applicable.")
 
 
 # =====================================================
 # Image Generation - Output schemas
 # =====================================================
 
-class ImageGenerationData(APIPodSchemaBase):
-    url: Optional[str] = Field(default=None, description="The URL of the generated image.")
-    b64_json: Optional[str] = Field(default=None, description="The base64-encoded JSON of the generated image.")
-    revised_prompt: Optional[str] = Field(default=None, description="The prompt as revised by the model, if applicable.")
-    seed: Optional[int] = Field(default=None, description="The seed used for generation.")
-
-
 class ImageGenerationResponse(APIPodSchemaBase):
-    id: str = Field(description="Unique identifier for the generation request.")
-    object: Literal["image_generation"] = Field(description="The object type, always 'image_generation'.")
+    object: Literal["image_generation"] = Field(default="image_generation", description="The object type, always 'image_generation'.")
     created: int = Field(description="The Unix timestamp when the generation was created.")
-    model: str = Field(description="The model used for generation.")
-    data: List[ImageGenerationData] = Field(description="The generated image data.")
+    model: Optional[str] = Field(default=None, description="The model used for generation.")
+    data: List[ImageFileModel] = Field(description="The generated image data.")
     usage: Optional[Usage] = Field(default=None, description="Token usage information, if applicable.")
 
 
@@ -325,57 +300,76 @@ class ImageGenerationResponse(APIPodSchemaBase):
 # Video Generation - Output schemas
 # =====================================================
 
-class VideoGenerationData(APIPodSchemaBase):
-    url: Optional[str] = Field(default=None, description="The URL of the generated video.")
-    duration_s: Optional[float] = Field(default=None, description="The duration of the generated video in seconds.")
-    seed: Optional[int] = Field(default=None, description="The seed used for generation.")
-
-
 class VideoGenerationResponse(APIPodSchemaBase):
-    id: str = Field(description="Unique identifier for the generation request.")
-    object: Literal["video_generation"] = Field(description="The object type, always 'video_generation'.")
+    object: Literal["video_generation"] = Field(default="video_generation", description="The object type, always 'video_generation'.")
     created: int = Field(description="The Unix timestamp when the generation was created.")
-    model: str = Field(description="The model used for generation.")
-    data: List[VideoGenerationData] = Field(description="The generated video data.")
+    model: Optional[str] = Field(default=None, description="The model used for generation.")
+    data: List[VideoFileModel] = Field(description="The generated video data.")
     usage: Optional[Usage] = Field(default=None, description="Token usage information, if applicable.")
 
 
 # =====================================================
-# Audio - Output schemas
+# Audio - Output schemas (transcription, speech, voices)
 # =====================================================
 
-class AudioData(APIPodSchemaBase):
-    audio: Optional[str] = Field(default=None, description="The URL or base64 data of the generated audio.")
-    text: Optional[str] = Field(default=None, description="The transcribed text, if applicable.")
-    language: Optional[str] = Field(default=None, description="The detected language, if applicable.")
-    duration_s: Optional[float] = Field(default=None, description="The duration of the audio in seconds.")
+class TranscriptionWord(APIPodSchemaBase):
+    word: str = Field(description="The transcribed word.")
+    start: float = Field(description="Start time of the word in seconds.")
+    end: float = Field(description="End time of the word in seconds.")
 
 
-class AudioResponse(APIPodSchemaBase):
-    id: str = Field(description="Unique identifier for the request.")
-    object: Literal["audio"] = Field(description="The object type, always 'audio'.")
+class TranscriptionSegment(APIPodSchemaBase):
+    id: int = Field(default=0, description="Index of the segment.")
+    start: float = Field(description="Start time of the segment in seconds.")
+    end: float = Field(description="End time of the segment in seconds.")
+    text: str = Field(description="The transcribed text of the segment.")
+
+
+class TranscriptionResponse(APIPodSchemaBase):
+    """Mirrors the OpenAI transcription object: plain `text` plus optional verbose details."""
+    text: str = Field(description="The transcribed text.")
+    language: Optional[str] = Field(default=None, description="The detected or requested language of the audio.")
+    duration: Optional[float] = Field(default=None, description="Duration of the input audio in seconds.")
+    segments: Optional[List[TranscriptionSegment]] = Field(default=None, description="Segment-level details (verbose_json).")
+    words: Optional[List[TranscriptionWord]] = Field(default=None, description="Word-level timestamps (verbose_json).")
+    usage: Optional[Usage] = Field(default=None, description="Token usage information, if applicable.")
+
+
+class AudioEnvelopeBase(APIPodSchemaBase):
+    """Shared envelope for endpoints that return audio files (speech synthesis, voice conversion)."""
     created: int = Field(description="The Unix timestamp when the response was created.")
-    model: str = Field(description="The model used for the task.")
-    data: List[AudioData] = Field(description="The resulting audio data.")
+    model: Optional[str] = Field(default=None, description="The model used for the task.")
+    data: List[AudioFileModel] = Field(description="The resulting audio file(s).")
     usage: Optional[Usage] = Field(default=None, description="Token usage information, if applicable.")
+
+
+class SpeechResponse(AudioEnvelopeBase):
+    object: Literal["audio.speech"] = Field(default="audio.speech", description="The object type, always 'audio.speech'.")
+
+
+class VoiceConversionResponse(AudioEnvelopeBase):
+    object: Literal["audio.conversion"] = Field(default="audio.conversion", description="The object type, always 'audio.conversion'.")
+
+
+class VoiceResponse(APIPodSchemaBase):
+    """A created (cloned) voice, optionally carrying its embedding file (e.g. a SpeechCraft .npz)."""
+    id: str = Field(description="Unique identifier of the voice.")
+    object: Literal["audio.voice"] = Field(default="audio.voice", description="The object type, always 'audio.voice'.")
+    name: str = Field(description="The name of the voice.")
+    created: int = Field(description="The Unix timestamp when the voice was created.")
+    model: Optional[str] = Field(default=None, description="The model used to create the voice.")
+    embedding: Optional[FileModel] = Field(default=None, description="The voice embedding file, if the service exposes it for reuse.")
 
 
 # =====================================================
 # 3D Generation - Output schemas
 # =====================================================
 
-class Generation3DData(APIPodSchemaBase):
-    url: Optional[str] = Field(default=None, description="The URL of the generated 3D asset.")
-    output_format: Optional[str] = Field(default=None, description="The format of the generated 3D asset.")
-    seed: Optional[int] = Field(default=None, description="The seed used for generation.")
-
-
 class Generation3DResponse(APIPodSchemaBase):
-    id: str = Field(description="Unique identifier for the request.")
-    object: Literal["generation_3d"] = Field(description="The object type, always 'generation_3d'.")
+    object: Literal["generation_3d"] = Field(default="generation_3d", description="The object type, always 'generation_3d'.")
     created: int = Field(description="The Unix timestamp when the response was created.")
-    model: str = Field(description="The model used for generation.")
-    data: List[Generation3DData] = Field(description="The generated 3D data.")
+    model: Optional[str] = Field(default=None, description="The model used for generation.")
+    data: List[ThreeDFileModel] = Field(description="The generated 3D data.")
     usage: Optional[Usage] = Field(default=None, description="Token usage information, if applicable.")
 
 
@@ -395,10 +389,9 @@ class VisionData(APIPodSchemaBase):
 
 
 class VisionResponse(APIPodSchemaBase):
-    id: str = Field(description="Unique identifier for the request.")
-    object: Literal["vision"] = Field(description="The object type, always 'vision'.")
+    object: Literal["vision"] = Field(default="vision", description="The object type, always 'vision'.")
     created: int = Field(description="The Unix timestamp when the response was created.")
-    model: str = Field(description="The model used for the vision task.")
+    model: Optional[str] = Field(default=None, description="The model used for the vision task.")
     data: List[VisionData] = Field(description="The resulting vision data.")
     usage: Optional[Usage] = Field(default=None, description="Token usage information, if applicable.")
 
@@ -415,9 +408,9 @@ class MultimodalEmbeddingData(APIPodSchemaBase):
 
 
 class MultimodalEmbeddingResponse(APIPodSchemaBase):
-    object: Literal["list"] = Field(description="The object type, always 'list'.")
+    object: Literal["list"] = Field(default="list", description="The object type, always 'list'.")
     data: List[MultimodalEmbeddingData] = Field(description="The list of embedding data objects.")
-    model: str = Field(description="The model used for generating embeddings.")
+    model: Optional[str] = Field(default=None, description="The model used for generating embeddings.")
     usage: Optional[Usage] = Field(default=None, description="Token usage information, if applicable.")
 
 
@@ -427,14 +420,16 @@ class MultimodalEmbeddingResponse(APIPodSchemaBase):
 class ChatDelta(BaseModel):
     content: Optional[str] = None
 
+
 class ChatStreamChoice(BaseModel):
     index: int
     delta: ChatDelta
     finish_reason: Optional[str] = None
 
+
 class ChatCompletionChunk(BaseModel):
     id: str
     object: Literal["chat.completion.chunk"] = "chat.completion.chunk"
     created: int
-    model: str
+    model: Optional[str] = None
     choices: List[ChatStreamChoice]
