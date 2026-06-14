@@ -29,11 +29,12 @@ apipod/
 │   ├── base_backend.py     # Shared backend base (title, version, health)
 │   ├── endpoint_config.py  # EndpointExecutionPlan + configurator (how to register an endpoint)
 │   ├── backend/
-│   │   ├── fastapi/        # SocaityFastAPIRouter + file handling, exceptions
+│   │   ├── fastapi/        # SocaityFastAPIRouter + file handling, streaming mixin, exceptions
 │   │   └── runpod/         # SocaityRunpodRouter (serverless, path-based)
 │   ├── files/              # _BaseFileHandlingMixin + parse_schema_media_fields (inputs → MediaFile)
 │   ├── jobs/               # BaseJob, JobProgress, JobResult (+ factory)
 │   ├── queue/              # JobQueue, JobStore, _QueueMixin (enqueue instead of block)
+│   ├── streaming/          # StreamStore port + LocalStreamStore + StreamProducer
 │   └── signatures/         # Signature inspection policies (media params, Body vs Form, …)
 └── deploy/                 # `apipod build`: Dockerfile generation, dependency/CUDA detection
 ```
@@ -110,8 +111,18 @@ Three streaming paths exist today:
    - a **generator of raw tokens**: for tags with a registered chunk model (`STREAM_CHUNK_SPECS`, currently `chat`), `SchemaStreamSerializer` wraps each token into the standardized chunk model (`ChatCompletionChunk`) as an SSE event — APIPod generates the stable chunk `id`, the `created` timestamp and the `object` discriminator, then closes with a final delta and the `[DONE]` sentinel. The endpoint only yields text. Other token-delta tags without a chunk model stream their tokens as-is (SSE), and non-SSE tags stream raw bytes;
    - an **`AudioFile`/`VideoFile`**: its encoded bytes are chunked into a `StreamingResponse` with the file's media content type — raw audio chunks, not SSE, matching OpenAI's `stream_format="audio"` behavior;
    - anything else: the regular wrapped JSON response (the endpoint cannot stream).
-   On RunPod the same logic applies, but chunks pass through `_yield_native_stream`, which base64-encodes binary chunks because RunPod transports JSON.
-3. **Job streaming** — `GET /stream/{job_id}` replays chunks from a pluggable stream store while a queued job is in `streaming` state (gateway integration).
+   On RunPod the same logic applies (`_as_native_stream`): the request is validated and media-parsed by `prepare_schema_call`, the response is wrapped by `wrap_schema_response`, and stream chunks are base64-encoded when binary because RunPod transports JSON.
+3. **Job streaming (serverless emulation)** — when a queue is configured, a streaming endpoint does **not** stream on the request connection. The job is enqueued and the response returns a `JobResult` immediately (with a `stream` link). The worker (producer) then relays the chunks into a **stream store**, and the client (consumer) reads them from `GET /stream/{job_id}` as SSE. A client that prefers to wait can poll `GET /status/{job_id}` instead and receive the **full aggregated result** once the job finishes. This mirrors a real deployment, where producer (worker) and consumer (gateway) live in different processes.
+
+### The stream store
+
+The **stream store** is the pluggable backend that buffers a job's chunks between the worker and the gateway. Its key idea is to decouple *producing* a stream (sync, worker side) from *consuming* it (async SSE, gateway side), so the same endpoint code streams identically whether it runs on localhost or on a real platform.
+
+- **`StreamStore`** (`engine/streaming/stream_store.py`) is the port (abstract base class). Producer methods (`open_stream`, `write_chunk`, `close_stream`) are synchronous because the worker writes from a sync context; the consumer method `read_chunks` is an async generator that yields straight into a `StreamingResponse`. `delete_stream` / `stream_exists` cover lifecycle.
+- **`LocalStreamStore`** (`engine/streaming/local_stream_store.py`) is the default in-memory implementation APIPod uses on localhost — thread-safe, no external dependencies. It exists purely to *emulate* deployment behavior; a real platform (e.g. Socaity) injects its own implementation (such as a Redis Streams store) via the `stream_store` constructor argument, without changing any endpoint code.
+- **`StreamProducer`** (`engine/streaming/stream_producer.py`) is the bridge the router hands to the worker: it carries the raw chunk iterator, how to serialize each chunk for the store (ChatCompletion deltas, base64-framed media bytes, or plain tokens), the closing chunks (`finish` + `[DONE]`), and how to aggregate the raw chunks into the full `/status` result.
+
+`APIPod()` wires a `LocalStreamStore` automatically whenever a job queue is in use (serverless-localhost and dedicated-with-queue). In plain FastAPI mode (no queue) there is no stream store: streaming happens directly on the request connection (path 1/2 above).
 
 ### Deployment
 

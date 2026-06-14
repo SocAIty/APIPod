@@ -6,7 +6,9 @@ from typing import Dict, Optional, TypeVar, Tuple
 
 from apipod.engine.queue.job_store import JobStore
 from apipod.engine.jobs.base_job import BaseJob, LocalJob, JOB_STATUS
+from apipod.engine.jobs.job_result import _job_status_to_public
 from apipod.engine.queue.job_queue_interface import JobQueueInterface
+from apipod.engine.streaming.stream_producer import StreamProducer
 import inspect
 
 T = TypeVar('T', bound=BaseJob)
@@ -35,6 +37,21 @@ class JobQueue(JobQueueInterface[T]):
         self._shutdown = threading.Event()
         self._job_threads: Dict[str, threading.Thread] = {}
         self._delete_orphan_jobs_after_seconds = delete_orphan_jobs_after_s
+        # Optional StreamStore. When set, generator/streaming jobs produce their
+        # chunks into the store (so a client can consume GET /stream/{job_id})
+        # while still aggregating the full result for GET /status/{job_id}.
+        self._stream_store = None
+
+    def set_stream_store(self, stream_store) -> None:
+        """Attach a :class:`StreamStore` used to relay streaming job output."""
+        self._stream_store = stream_store
+
+    def get_job_status(self, job_id: str) -> Optional[dict]:
+        """Lightweight status lookup that never removes the job (used by /stream)."""
+        job = self.job_store.get_job(job_id)
+        if job is None:
+            return None
+        return {"id": job_id, "status": _job_status_to_public(job.status)}
 
     def set_queue_size(self, job_function: callable, queue_size: int = 500) -> None:
         self.queue_sizes[job_function.__name__] = queue_size
@@ -93,7 +110,15 @@ class JobQueue(JobQueueInterface[T]):
 
             self._inject_job_progress(job)
 
-            job.result = job.job_function(**job.job_params)
+            result = job.job_function(**job.job_params)
+
+            # Streaming endpoints return a StreamProducer instead of a value: the
+            # worker relays chunks into the stream store (consumed via /stream)
+            # and keeps the aggregated result for /status.
+            if isinstance(result, StreamProducer):
+                result = self._run_stream(job, result)
+
+            job.result = result
             job.job_progress.set_status(1.0)
             self._complete_job(job=job, final_state=JOB_STATUS.FINISHED)
 
@@ -105,6 +130,36 @@ class JobQueue(JobQueueInterface[T]):
             # Print the full stack trace to standard error
             print(f"Job {job.id} failed: {str(e)}")
             traceback.print_exc()  # Writes full traceback to stderr
+
+    def _run_stream(self, job: T, producer: StreamProducer):
+        """Drive a :class:`StreamProducer`: relay chunks into the stream store
+        (if configured) while collecting raw items to build the full result.
+
+        Without a stream store the chunks are simply aggregated, so the job still
+        returns a complete result via /status (streaming silently degrades).
+        """
+        store = self._stream_store
+        collected = []
+
+        if store is None:
+            for item in producer.raw_chunks:
+                collected.append(item)
+            return producer.aggregate(collected)
+
+        job.status = JOB_STATUS.STREAMING
+        store.open_stream(job.id)
+        try:
+            for item in producer.raw_chunks:
+                collected.append(item)
+                store.write_chunk(job.id, producer.to_chunk(item))
+            for closing_chunk in producer.closing:
+                store.write_chunk(job.id, closing_chunk)
+            store.close_stream(job.id)
+        except Exception as e:
+            store.close_stream(job.id, error=str(e))
+            raise
+
+        return producer.aggregate(collected)
 
     def _complete_job(self, job: T, final_state: JOB_STATUS) -> T:
         self.job_store.complete_job(job.id)

@@ -3,34 +3,26 @@ import inspect
 import threading
 import logging
 from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator, Iterator
-from typing import Any, Union, Callable, get_origin, get_type_hints
-from fastapi import APIRouter, FastAPI, Request, Response, status
+from typing import Union, Callable
+from fastapi import APIRouter, FastAPI, Response, status
 from fastapi.exceptions import HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from apipod.common.settings import APIPOD_PORT, APIPOD_HOST
 from apipod.common.constants import SERVER_HEALTH
 from apipod.engine.jobs.job_result import JobResultFactory, JobResult
-from apipod.engine.endpoint_config import FastApiEndpointConfigurator, EndpointExecutionPlan
+from apipod.engine.endpoint_config import build_plan, EndpointExecutionPlan
+from apipod.engine.streaming.stream_serializer import build_stream_producer
 from apipod.engine.base_backend import _BaseBackend
 from apipod.engine.queue.queue_mixin import _QueueMixin
 from apipod.engine.backend.fastapi.file_handling_mixin import _fast_api_file_handling_mixin
+from apipod.engine.backend.fastapi.streaming_mixin import _FastAPIStreamingMixin
 from apipod.engine.utils import normalize_name
 from apipod.engine.backend.fastapi.exception_handling import _FastAPIExceptionHandler
-from apipod.engine.backend.schema_resolve import (
-    SchemaBinding,
-    SchemaStreamSerializer,
-    SSE_DONE,
-    SSE_STREAM_TAGS,
-    STREAM_CHUNK_SPECS,
-    iter_media_chunks,
-    wrap_schema_response,
-)
-from media_toolkit import AudioFile, VideoFile
+from apipod.engine.backend.schema_resolve import wrap_schema_response
 
 
-class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_handling_mixin, _FastAPIExceptionHandler):
+class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_handling_mixin, _FastAPIStreamingMixin, _FastAPIExceptionHandler):
     """
     FastAPI router extension that adds support for task endpoints.
 
@@ -108,9 +100,15 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         self.prefix = prefix
         self.stream_store = stream_store
         self.gateway_stream_url_prefix = gateway_stream_url_prefix
-        self.add_standard_routes()
 
-        self._endpoint_configurator = FastApiEndpointConfigurator(self)
+        # Let the queue produce streaming job output into the stream store so a
+        # client can consume it via GET /stream/{job_id} (serverless emulation).
+        if self.job_queue is not None and self.stream_store is not None:
+            set_store = getattr(self.job_queue, "set_stream_store", None)
+            if callable(set_store):
+                set_store(self.stream_store)
+
+        self.add_standard_routes()
 
         # Exception handling
         _FastAPIExceptionHandler.__init__(self)
@@ -264,47 +262,6 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             ) from None
         return {"id": job_id, "status": "cancelled", "message": "Job cancelled."}
 
-    async def stream_job_sse(self, job_id: str, request: Request):
-        """Server-Sent Events for streaming job output (requires stream_store)."""
-        job_id = job_id.strip().strip('"').strip("'").strip("?").strip("#")
-        if self.stream_store is None:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Streaming not configured.")
-        if self.job_queue is None:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Job queue not configured.")
-
-        jq = self.job_queue
-        job_data = jq.get_job_status(job_id) if hasattr(jq, "get_job_status") else None
-
-        if job_data is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job '{job_id}' not found.")
-
-        st = (job_data.get("status") or "").lower()
-        if st != "streaming" and not self.stream_store.stream_exists(job_id):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Job '{job_id}' is not streaming (status: {job_data.get('status')}).",
-            )
-
-        async def _event_generator():
-            try:
-                async for chunk in self.stream_store.read_chunks(job_id):
-                    if await request.is_disconnected():
-                        break
-                    yield chunk
-            except Exception:
-                self._logger.exception("Error during stream delivery | job_id=%s", job_id)
-                yield 'data: {"error": "Internal stream error"}\n\n'
-
-        return StreamingResponse(
-            _event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
     def endpoint(self, path: str, methods: list[str] | None = None, max_upload_file_size_mb: int = None, queue_size: int = 500, use_queue: bool = None, *args, **kwargs):
         """
         Unified endpoint decorator.
@@ -325,18 +282,22 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         should_use_queue = self._determine_queue_usage(use_queue, normalized_path)
 
         def decorator(func: Callable) -> Callable:
-            plan = self._create_endpoint_plan(
-                func=func,
-                normalized_path=normalized_path,
+            plan = build_plan(
+                func,
+                path=normalized_path,
                 methods=methods,
                 max_upload_file_size_mb=max_upload_file_size_mb,
                 queue_size=queue_size,
                 should_use_queue=should_use_queue,
                 route_args=args,
-                route_kwargs=kwargs
+                route_kwargs=kwargs,
             )
 
-            if plan.is_streaming:
+            # Streaming with a queue + stream store mimics a real deployment:
+            # the job is queued, the worker produces chunks into the stream store
+            # and the client consumes them from GET /stream/{job_id}. Without a
+            # queue (plain FastAPI) streaming goes straight to the client.
+            if plan.is_streaming and not plan.should_use_queue:
                 return self._create_streaming_endpoint_decorator(plan)(func)
             if plan.should_use_queue:
                 return self._create_task_endpoint_decorator(plan)(func)
@@ -344,85 +305,6 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             return self._create_standard_endpoint_decorator(plan)(func)
 
         return decorator
-
-    def _create_endpoint_plan(
-        self,
-        *,
-        func: Callable,
-        normalized_path: str,
-        methods: list[str] | None,
-        max_upload_file_size_mb: int | None,
-        queue_size: int,
-        should_use_queue: bool,
-        route_args: tuple,
-        route_kwargs: dict,
-    ) -> EndpointExecutionPlan:
-        """Build an orchestration plan for endpoint registration and execution."""
-        return self._endpoint_configurator.build_plan(
-            func=func,
-            path=normalized_path,
-            methods=methods,
-            max_upload_file_size_mb=max_upload_file_size_mb,
-            queue_size=queue_size,
-            should_use_queue=should_use_queue,
-            route_args=route_args,
-            route_kwargs=route_kwargs,
-        )
-    
-    async def _execute_func(self, func, **kwargs):
-        """
-        Execute a function, handling both sync and async functions.
-        
-        Args:
-            func: Function to execute
-            **kwargs: Arguments to pass to function
-
-        Returns:
-            Result of function execution
-        """
-        if inspect.iscoroutinefunction(func):
-            return await func(**kwargs)
-        else:
-            # Sync function - run in thread pool to avoid blocking
-            import asyncio
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, functools.partial(func, **kwargs))
-
-    async def _stream_generator(self, result):
-        """
-        Convert a sync or async generator into an async generator for StreamingResponse.
-
-        Args:
-            result: Generator (sync or async) that yields streaming chunks
-
-        Yields:
-            Streaming chunks as strings or bytes
-        """
-        import asyncio
-
-        if inspect.isasyncgen(result):
-            # Async generator - yield directly
-            async for chunk in result:
-                if isinstance(chunk, (str, bytes)):
-                    yield chunk
-                else:
-                    yield str(chunk)
-        elif inspect.isgenerator(result):
-            # Sync generator - run in executor
-            loop = asyncio.get_event_loop()
-            try:
-                while True:
-                    chunk = await loop.run_in_executor(None, next, result, StopIteration)
-                    if chunk is StopIteration:
-                        break
-                    if isinstance(chunk, (str, bytes)):
-                        yield chunk
-                    else:
-                        yield str(chunk)
-            except StopIteration:
-                pass
-        else:
-            raise TypeError(f"Expected generator, got {type(result)}")
 
     def _normalize_endpoint_path(self, path: str) -> str:
         """Normalize the endpoint path to ensure it starts with '/'."""
@@ -439,81 +321,32 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
 
         return self.job_queue is not None
 
-    def _is_streaming_endpoint(self, func: Callable) -> bool:
-        """
-        Determine whether the function streams its output: it is a (async)
-        generator function, or its return annotation declares an iterator.
-        """
-        target = inspect.unwrap(func)
-        if inspect.isgeneratorfunction(target) or inspect.isasyncgenfunction(target):
-            return True
-
-        try:
-            return_type = get_type_hints(target).get('return')
-        except Exception:
-            return False
-
-        if return_type is None:
-            return False
-
-        origin = get_origin(return_type) or return_type
-        return inspect.isclass(origin) and issubclass(origin, (Iterator, AsyncIterator))
-
-    def _as_streaming_response(self, result: Any, binding: SchemaBinding) -> StreamingResponse | None:
-        """
-        Build a :class:`StreamingResponse` if a schema endpoint result is streamable:
-        - ``AudioFile`` / ``VideoFile`` stream their encoded bytes as raw chunks
-          with the proper media content type (OpenAI ``stream_format="audio"``);
-        - generators of raw tokens are wrapped into the schema's standardized chunk
-          SSE stream (e.g. ``ChatCompletionChunk``) when one is registered, else
-          streamed as-is: SSE for token-delta endpoints, raw bytes otherwise.
-        Returns ``None`` when the result cannot be streamed.
-        """
-        if isinstance(result, (AudioFile, VideoFile)):
-            media_type = getattr(result, "content_type", None) or "application/octet-stream"
-            return StreamingResponse(iter_media_chunks(result), media_type=media_type)
-
-        if inspect.isgenerator(result) or inspect.isasyncgen(result):
-            if binding.tag in STREAM_CHUNK_SPECS:
-                generator = self._schema_chunk_stream(result, binding)
-            else:
-                generator = self._stream_generator(result)
-            media_type = "text/event-stream" if binding.tag in SSE_STREAM_TAGS else "application/octet-stream"
-            return StreamingResponse(
-                generator,
-                media_type=media_type,
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-            )
-
-        return None
-
-    async def _schema_chunk_stream(self, result: Any, binding: SchemaBinding) -> AsyncIterator[str]:
-        """Wrap raw token deltas into the schema's standardized chunk SSE stream."""
-        serializer = SchemaStreamSerializer(binding)
-        async for token in self._stream_generator(result):
-            yield serializer.delta(token)
-        yield serializer.finish()
-        yield SSE_DONE
-
     # ------------------------------------------------------------------
     # Endpoint decorators (task / standard / streaming)
     # ------------------------------------------------------------------
-    def _modify_result_decorator(self, func: Callable, plan: EndpointExecutionPlan) -> Callable:
+    def _modify_result_decorator(self, func: Callable, plan: EndpointExecutionPlan, *, queued: bool) -> Callable:
         """
-        Wraps responses of schema endpoints into their declared response format.
+        Wraps endpoint responses into their final transport form.
 
-        Streaming results (a token generator or media file) are turned into the
-        schema's standardized SSE/byte stream; everything else is wrapped into the
-        response model and serialized (media files -> JSON).
+        Streamable results (a token/chunk generator) become a stream:
+        - ``queued`` (job queue): a :class:`StreamProducer` is returned so the
+          worker relays chunks into the stream store (consumed via /stream) while
+          aggregating the full result for /status;
+        - direct (no queue): a :class:`StreamingResponse` is returned to the client.
+
+        Non-streaming schema results are wrapped into the response model; all
+        results are then serialized (media files -> JSON).
         """
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
             result = func(*args, **kwargs)
+
+            producer = build_stream_producer(result, plan.schema_binding)
+            if producer is not None:
+                return producer if queued else self._streaming_response_from_producer(producer)
+
             binding = plan.schema_binding
             if binding is not None:
-                streaming = self._as_streaming_response(result, binding)
-                if streaming is not None:
-                    return streaming
                 result = wrap_schema_response(result, binding)
             return JobResultFactory._serialize_result(result)
         return sync_wrapper
@@ -540,7 +373,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         )
 
         def decorator(func: Callable) -> Callable:
-            func = self._modify_result_decorator(func, plan)
+            func = self._modify_result_decorator(func, plan, queued=True)
             # Add job queue functionality and prepare for FastAPI file handling
             queue_decorated = queue_decorator(func)
             # Register the function so workers can execute it (dev mode).
@@ -565,37 +398,8 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         )
 
         def decorator(func: Callable) -> Callable:
-            result_modified = self._modify_result_decorator(func, plan)
+            result_modified = self._modify_result_decorator(func, plan, queued=False)
             with_file_upload_signature = self._prepare_func_for_media_file_upload_with_fastapi(result_modified, plan.max_upload_file_size_mb)
-            return fastapi_route_decorator(with_file_upload_signature)
-
-        return decorator
-
-    def _create_streaming_endpoint_decorator(self, plan: EndpointExecutionPlan):
-        """Create a decorator for streaming endpoints."""
-        kwargs = dict(plan.route_kwargs)
-        custom_headers = kwargs.pop('response_headers', None)
-
-        fastapi_route_decorator = self.api_route(
-            path=plan.path,
-            methods=plan.active_methods,
-            *plan.route_args,
-            **kwargs
-        )
-
-        def decorator(func: Callable) -> Callable:
-            @functools.wraps(func)
-            async def streaming_wrapper(*w_args, **w_kwargs):
-                result = await self._execute_func(func, *w_args, **w_kwargs)
-                generator = self._stream_generator(result)
-
-                headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-                if custom_headers:
-                    headers.update(custom_headers)
-
-                return StreamingResponse(generator, media_type="text/event-stream", headers=headers)
-
-            with_file_upload_signature = self._prepare_func_for_media_file_upload_with_fastapi(streaming_wrapper, plan.max_upload_file_size_mb)
             return fastapi_route_decorator(with_file_upload_signature)
 
         return decorator

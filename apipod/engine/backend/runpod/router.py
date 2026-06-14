@@ -1,24 +1,35 @@
 import asyncio
-import base64
 import functools
 import inspect
 import traceback
 from datetime import datetime, timezone
-from typing import Union, Callable
+from typing import Union, Callable, Iterator
 
 from apipod.common import constants
 from apipod.engine.jobs.base_job import JOB_STATUS
 from apipod.engine.jobs.job_progress import JobProgressRunpod, JobProgress
-from apipod.engine.jobs.job_result import JobResultFactory, JobResult
+from apipod.engine.jobs.job_result import (
+    JobResultFactory,
+    JobResult,
+    JobMetrics,
+    _compute_duration_s,
+    _job_status_to_public,
+)
 from apipod.engine.base_backend import _BaseBackend
+from apipod.engine.endpoint_config import build_plan, EndpointExecutionPlan
 from apipod.engine.files.base_file_mixin import _BaseFileHandlingMixin
 from apipod.engine.backend.schema_resolve import (
+    SchemaBinding,
+    SchemaStreamSerializer,
+    STREAM_CHUNK_SPECS,
     iter_media_chunks,
+    prepare_schema_call,
     wrap_schema_response,
 )
+from apipod.engine.streaming.stream_serializer import as_sync_iter, encode_chunk, is_streaming_result
 
 from apipod.engine.utils import normalize_name
-from apipod.common.settings import APIPOD_PROVIDER, APIPOD_PORT, DEFAULT_DATE_TIME_FORMAT
+from apipod.common.settings import APIPOD_PROVIDER, APIPOD_PORT
 from media_toolkit import AudioFile, VideoFile
 
 
@@ -41,62 +52,75 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         path = normalize_name(path, preserve_paths=True).strip("/")
 
         def decorator(func: Callable) -> Callable:
-            # binding = get_schema_binding(func)
-
-            @functools.wraps(func)
-            def wrapper(*w_args, **w_kwargs):
-                self.status = constants.SERVER_HEALTH.BUSY
-                try:
-                    # if binding is None:
-                    #    return self._execute_sync_or_async(func, w_args, w_kwargs)
-
-                    # request = prepare_schema_call(binding, w_kwargs)
-                    result = self._execute_sync_or_async(func, w_args, w_kwargs)
-
-                    if getattr(request, "stream", False):
-                        if isinstance(result, (AudioFile, VideoFile)):
-                            return self._yield_native_stream(iter_media_chunks(result))
-                        if inspect.isgenerator(result) or inspect.isasyncgen(result):
-                            return self._yield_native_stream(result)
-
-                    return wrap_schema_response(result, binding)
-                finally:
-                    self.status = constants.SERVER_HEALTH.RUNNING
-
-            self.routes[path] = wrapper
-            return wrapper
+            plan = build_plan(func, path=path)
+            route = self._build_route(func, plan)
+            self.routes[path] = route
+            return route
         return decorator
 
-    @staticmethod
-    def _encode_stream_chunk(chunk) -> str:
-        """RunPod transports everything as JSON: binary chunks are base64-encoded."""
-        if isinstance(chunk, bytes):
-            return base64.b64encode(chunk).decode("ascii")
-        return chunk if isinstance(chunk, str) else str(chunk)
+    def _build_route(self, func: Callable, plan: EndpointExecutionPlan) -> Callable:
+        """
+        Compose the callable registered for a route from its execution plan.
 
-    def _yield_native_stream(self, result):
-        """Bridge a stream result (sync/async generator or StreamingResponse) into RunPod's native stream."""
-        from starlette.responses import StreamingResponse
+        Schema endpoints validate + media-parse their request themselves; plain
+        endpoints get the generic media file-upload conversion wrapped in.
+        """
+        @functools.wraps(func)
+        def wrapper(*w_args, **w_kwargs):
+            self.status = constants.SERVER_HEALTH.BUSY
+            try:
+                if plan.is_schema_endpoint:
+                    return self._handle_schema_request(func, plan.schema_binding, w_args, w_kwargs)
+                result = self._execute_sync_or_async(func, w_args, w_kwargs)
+                # Plain generator endpoints stream too: turn the generator into a
+                # RunPod-native stream of JSON-safe chunks (RunPod aggregates it).
+                native_stream = self._as_native_stream(result)
+                return native_stream if native_stream is not None else result
+            finally:
+                self.status = constants.SERVER_HEALTH.RUNNING
 
-        # If it's a StreamingResponse (shouldn't happen in RunPod, but handle it)
-        if isinstance(result, StreamingResponse):
-            result = result.body_iterator
+        return wrapper if plan.is_schema_endpoint else self._handle_file_uploads(wrapper)
 
-        if inspect.isasyncgen(result):
-            while True:
-                try:
-                    yield self._encode_stream_chunk(self._run_in_loop(result.__anext__()))
-                except StopAsyncIteration:
-                    break
-            return
+    # ------------------------------------------------------------------
+    # Standardized schema endpoints
+    # ------------------------------------------------------------------
+    def _handle_schema_request(self, func: Callable, binding: SchemaBinding, args: tuple, kwargs: dict):
+        """
+        Run a standardized schema endpoint: validate + media-parse the request
+        (``prepare_schema_call``), then stream or wrap the response into the
+        registered response model (``wrap_schema_response``).
+        """
+        request = prepare_schema_call(binding, kwargs)
+        result = self._execute_sync_or_async(func, args, kwargs)
 
-        if inspect.isgenerator(result) or hasattr(result, "__iter__"):
-            for chunk in result:
-                yield self._encode_stream_chunk(chunk)
-            return
+        if getattr(request, "stream", False):
+            native_stream = self._as_native_stream(result, binding)
+            if native_stream is not None:
+                return native_stream
 
-        # Not a generator - shouldn't happen for streaming
-        raise TypeError(f"Expected generator for streaming, got {type(result)}")
+        return wrap_schema_response(result, binding)
+
+    def _as_native_stream(self, result, binding: Union[SchemaBinding, None] = None) -> Union[Iterator, None]:
+        """
+        Wrap a streamable result into a RunPod-native generator of JSON-safe chunks.
+
+        - ``AudioFile`` / ``VideoFile`` → base64-encoded byte chunks;
+        - schema generator with a registered chunk model (e.g. chat) → standardized
+          ``ChatCompletionChunk`` stream via :class:`SchemaStreamSerializer`;
+        - any other generator → ``encode_chunk`` (base64 for binary, str for text).
+
+        Returns ``None`` when the result is not streamable.
+        """
+        if isinstance(result, (AudioFile, VideoFile)):
+            return (encode_chunk(chunk) for chunk in iter_media_chunks(result))
+
+        if is_streaming_result(result):
+            tokens = as_sync_iter(result)
+            if binding is not None and binding.tag in STREAM_CHUNK_SPECS:
+                return SchemaStreamSerializer(binding).stream(tokens)
+            return (encode_chunk(chunk) for chunk in tokens)
+
+        return None
 
     def _execute_sync_or_async(self, func, args, kwargs):
         if inspect.iscoroutinefunction(func):
@@ -172,15 +196,8 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         if missing_args:
             raise Exception(f"Arguments {missing_args} are missing")
 
-        # Handle file uploads and conversions
-        route_function = self._handle_file_uploads(route_function)
-
-        # Prepare result tracking
         start_time = datetime.now(timezone.utc)
-        result = JobResult(
-            job_id=job["id"],
-            created_at=start_time.strftime(DEFAULT_DATE_TIME_FORMAT),
-        )
+        result = JobResult(job_id=job["id"], endpoint=path)
 
         try:
             # Execute the function (Sync or Async Handling)
@@ -196,33 +213,40 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
             res = JobResultFactory._serialize_result(res)
 
             result.result = res
-            result.status = JOB_STATUS.FINISHED.value
+            result.status = _job_status_to_public(JOB_STATUS.FINISHED)
         except Exception as e:
             result.error = str(e)
-            result.status = JOB_STATUS.FAILED.value
+            result.status = _job_status_to_public(JOB_STATUS.FAILED)
             print(f"Job {job['id']} failed: {str(e)}")
             traceback.print_exc()
-        finally:
-            result.updated_at = datetime.now(timezone.utc).strftime(DEFAULT_DATE_TIME_FORMAT)
 
-        result = result.model_dump_json()
-        return result
+        for arg in kwargs.values():
+            if isinstance(arg, JobProgressRunpod):
+                result.progress = float(arg._progress)
+                result.message = arg._message
+                break
+
+        inference_time_s = _compute_duration_s(start_time, datetime.now(timezone.utc))
+        if inference_time_s is not None:
+            result.metrics = JobMetrics(inference_time_s=inference_time_s)
+
+        return result.model_dump_json(exclude_none=True)
 
     def _execute_route_function(self, route_function, kwargs):
         """
         Execute a route function, handling both sync and async functions.
-
+        
         Args:
             route_function: The function to execute
             kwargs: Keyword arguments to pass to the function
-
+            
         Returns:
             The result of the function execution
         """
         if not inspect.iscoroutinefunction(route_function):
             # Synchronous function - simple execution
             return route_function(**kwargs)
-
+        
         # Async function - need event loop handling
         try:
             loop = asyncio.get_event_loop()

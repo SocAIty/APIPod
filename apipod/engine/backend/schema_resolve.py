@@ -24,7 +24,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import UnionType
-from typing import Any, Callable, Iterator, Optional, Type, Union, get_args, get_origin
+from typing import Any, Callable, Iterable, Iterator, Optional, Type, Union, get_args, get_origin
 
 from pydantic import BaseModel
 from media_toolkit import MediaFile
@@ -296,3 +296,10 @@ class SchemaStreamSerializer:
     def finish(self) -> str:
         """Serialize the closing chunk (``finish_reason='stop'``)."""
         return _to_sse(self._build(self._chunk_id, self._created, None, "stop"))
+
+    def stream(self, tokens: Iterable[str]) -> Iterator[str]:
+        """Wrap a synchronous token iterable into the full chunk SSE stream (deltas, closing chunk, [DONE])."""
+        for token in tokens:
+            yield self.delta(token)
+        yield self.finish()
+        yield SSE_DONE

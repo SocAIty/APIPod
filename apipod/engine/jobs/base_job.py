@@ -9,6 +9,7 @@ from apipod.engine.jobs.job_progress import JobProgress
 class JOB_STATUS(Enum):
     QUEUED = "Queued"
     PROCESSING = "Processing"
+    STREAMING = "Streaming"
     FINISHED = "Finished"
     FAILED = "Failed"
     TIMEOUT = "Timeout"

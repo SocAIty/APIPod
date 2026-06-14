@@ -20,6 +20,7 @@ def _job_status_to_public(status: Any) -> Optional[str]:
         return {
             JOB_STATUS.QUEUED: "pending",
             JOB_STATUS.PROCESSING: "processing",
+            JOB_STATUS.STREAMING: "streaming",
             JOB_STATUS.FINISHED: "completed",
             JOB_STATUS.FAILED: "failed",
             JOB_STATUS.TIMEOUT: "failed",
@@ -30,6 +31,7 @@ def _job_status_to_public(status: Any) -> Optional[str]:
             "queued": "pending",
             "pending": "pending",
             "processing": "processing",
+            "streaming": "streaming",
             "finished": "completed",
             "completed": "completed",
             "failed": "failed",

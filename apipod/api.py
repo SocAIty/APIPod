@@ -54,9 +54,17 @@ def APIPod(
         use_job_queue = True
         job_queue = custom_job_queue
     else:
-        job_queue = _create_job_queue() if use_job_queue else None
+        from apipod.engine.queue.job_queue import JobQueue
+        job_queue = JobQueue() if use_job_queue else None
 
     if backend_class == SocaityFastAPIRouter:
+        # Streaming (serverless emulation): when a queue runs, the worker relays
+        # streaming output into a stream store consumed via GET /stream/{job_id}.
+        # Default to the in-memory LocalStreamStore; a deployment can inject its
+        # own (e.g. Redis-backed) store. Plain FastAPI (no queue) streams directly
+        # and uses no stream store.
+        if use_job_queue and "stream_store" not in kwargs:
+            kwargs["stream_store"] = _create_stream_store()
         return backend_class(job_queue=job_queue, *args, **kwargs)
     else:
         return backend_class(*args, **kwargs)
@@ -146,3 +154,9 @@ def _create_job_queue() -> JobQueueInterface:
     from apipod.engine.queue.job_queue import JobQueue
 
     return JobQueue()
+
+
+def _create_stream_store():
+    from apipod.engine.streaming.local_stream_store import LocalStreamStore
+
+    return LocalStreamStore()
