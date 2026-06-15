@@ -1,26 +1,6 @@
-import inspect
 import logging
-from typing import Callable, List
 
 logger = logging.getLogger(__name__)
-
-
-def job_progress_param_names(func: Callable) -> List[str]:
-    """Names of the parameters of *func* that should receive a :class:`JobProgress`.
-
-    A parameter qualifies when it is literally named ``job_progress`` or when its
-    annotation refers to a ``JobProgress`` type. This single detection is shared
-    by every injection site (queue worker, RunPod handler, direct FastAPI path)
-    so they can never disagree about what counts as a progress parameter.
-    """
-    try:
-        params = inspect.signature(func).parameters.values()
-    except (TypeError, ValueError):
-        return []
-    return [
-        p.name for p in params
-        if p.name == "job_progress" or "JobProgress" in str(p.annotation)
-    ]
 
 
 class JobProgress:

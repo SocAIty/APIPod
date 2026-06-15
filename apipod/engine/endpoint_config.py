@@ -1,19 +1,12 @@
 """
 Endpoint planning: backend-neutral analysis of an endpoint function.
-
-``is_streaming_endpoint`` inspects a function's definition to decide whether
-it streams its output.  ``build_plan`` combines that with schema detection and
-optional backend-specific parameters (queue, upload limits, …) into an
-immutable :class:`EndpointExecutionPlan` — the shared contract used by every
-backend (FastAPI, RunPod).
 """
 
-import inspect
-from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Callable, get_origin, get_type_hints
+from typing import Any, Callable, Optional
 
 from apipod.engine.backend.schema_resolve import SchemaBinding, get_schema_binding
+from apipod.engine.signatures.analysis import is_streaming_endpoint
 
 
 @dataclass(frozen=True)
@@ -45,26 +38,6 @@ class EndpointExecutionPlan:
         return ["POST"] if self.methods is None else self.methods
 
 
-def is_streaming_endpoint(func: Callable) -> bool:
-    """Backend-neutral: True if *func* is a generator or annotated as an Iterator.
-
-    A generator function (``yield``) or async generator function (``async yield``)
-    is always considered streaming.  A regular function whose return annotation
-    is ``Iterator[...]`` / ``AsyncIterator[...]`` or any subclass is also detected.
-    """
-    target = inspect.unwrap(func)
-    if inspect.isgeneratorfunction(target) or inspect.isasyncgenfunction(target):
-        return True
-    try:
-        return_type = get_type_hints(target).get("return")
-    except Exception:
-        return False
-    if return_type is None:
-        return False
-    origin = get_origin(return_type) or return_type
-    return inspect.isclass(origin) and issubclass(origin, (Iterator, AsyncIterator))
-
-
 def build_plan(
     func: Callable,
     path: str,
@@ -92,5 +65,5 @@ def build_plan(
         route_args=route_args,
         route_kwargs=route_kwargs if route_kwargs is not None else {},
         schema_binding=schema_binding,
-        is_streaming=schema_binding is None and is_streaming_endpoint(func),
+        is_streaming=schema_binding is None and is_streaming_endpoint(func)
     )

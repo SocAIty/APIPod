@@ -31,6 +31,7 @@ from media_toolkit import MediaFile
 
 from apipod.common.schemas import *
 from apipod.engine.files.base_file_mixin import parse_schema_media_fields
+from apipod.engine.signatures.analysis import is_injected_progress_param
 
 
 @dataclass(frozen=True)
@@ -126,10 +127,7 @@ def get_schema_binding(func: Callable) -> Optional[SchemaBinding]:
 
 def _is_injected_param(param: inspect.Parameter) -> bool:
     """True for parameters the framework supplies (job progress, self/cls)."""
-    return (
-        param.name in ("self", "cls", "job_progress")
-        or "JobProgress" in str(param.annotation)
-    )
+    return param.name in ("self", "cls") or is_injected_progress_param(param)
 
 
 def _validate_schema_endpoint_signature(func: Callable, binding: SchemaBinding) -> None:

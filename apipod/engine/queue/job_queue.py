@@ -6,7 +6,7 @@ from typing import Dict, Optional, TypeVar, Tuple
 
 from apipod.engine.queue.job_store import JobStore
 from apipod.engine.jobs.base_job import BaseJob, LocalJob, JOB_STATUS
-from apipod.engine.jobs.job_progress import job_progress_param_names
+from apipod.engine.signatures.analysis import job_progress_param_names
 from apipod.engine.queue.job_queue_interface import JobQueueInterface
 from apipod.engine.streaming.stream_producer import StreamProducer
 
