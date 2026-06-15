@@ -155,7 +155,7 @@ def test_status_returns_full_result_when_not_streaming():
         if body.get("result") is not None:
             full_result = body["result"]
             break
-        if body.get("status") in ("completed", "failed", "not_found"):
+        if body.get("status") in ("finished", "failed", "timeout", "not_found"):
             full_result = body.get("result")
             break
     assert full_result == "".join(TEXT_TOKENS)

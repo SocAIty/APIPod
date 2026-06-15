@@ -1,4 +1,3 @@
-import asyncio
 import functools
 import inspect
 import traceback
@@ -6,15 +5,9 @@ from datetime import datetime, timezone
 from typing import Union, Callable, Iterator
 
 from apipod.common import constants
-from apipod.engine.jobs.base_job import JOB_STATUS
-from apipod.engine.jobs.job_progress import JobProgressRunpod, JobProgress
-from apipod.engine.jobs.job_result import (
-    JobResultFactory,
-    JobResult,
-    JobMetrics,
-    _compute_duration_s,
-    _job_status_to_public,
-)
+from apipod.engine.jobs.base_job import BaseJob, JOB_STATUS
+from apipod.engine.jobs.job_progress import JobProgressRunpod, job_progress_param_names
+from apipod.engine.jobs.job_result import JobResultFactory
 from apipod.engine.base_backend import _BaseBackend
 from apipod.engine.endpoint_config import build_plan, EndpointExecutionPlan
 from apipod.engine.files.base_file_mixin import _BaseFileHandlingMixin
@@ -71,7 +64,7 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
             try:
                 if plan.is_schema_endpoint:
                     return self._handle_schema_request(func, plan.schema_binding, w_args, w_kwargs)
-                result = self._execute_sync_or_async(func, w_args, w_kwargs)
+                result = self.run_callable(func, *w_args, **w_kwargs)
                 # Plain generator endpoints stream too: turn the generator into a
                 # RunPod-native stream of JSON-safe chunks (RunPod aggregates it).
                 native_stream = self._as_native_stream(result)
@@ -91,7 +84,7 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         registered response model (``wrap_schema_response``).
         """
         request = prepare_schema_call(binding, kwargs)
-        result = self._execute_sync_or_async(func, args, kwargs)
+        result = self.run_callable(func, *args, **kwargs)
 
         if getattr(request, "stream", False):
             native_stream = self._as_native_stream(result, binding)
@@ -122,19 +115,6 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
 
         return None
 
-    def _execute_sync_or_async(self, func, args, kwargs):
-        if inspect.iscoroutinefunction(func):
-            return self._run_in_loop(func(*args, **kwargs))
-        return func(*args, **kwargs)
-
-    def _run_in_loop(self, coro):
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop.run_until_complete(coro)
-
     def get(self, path: str = None, *args, **kwargs):
         return self.endpoint(path=path, *args, **kwargs)
 
@@ -153,11 +133,7 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         Returns:
             Updated kwargs with job_progress added
         """
-        job_progress_params = []
-        for param in inspect.signature(func).parameters.values():
-            if param.annotation in (JobProgress, JobProgressRunpod) or param.name == "job_progress":
-                job_progress_params.append(param.name)
-
+        job_progress_params = job_progress_param_names(func)
         if job_progress_params:
             jp = JobProgressRunpod(job)
             for job_progress_param in job_progress_params:
@@ -196,82 +172,37 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         if missing_args:
             raise Exception(f"Arguments {missing_args} are missing")
 
-        start_time = datetime.now(timezone.utc)
-        result = JobResult(job_id=job["id"], endpoint=path)
+        # Create a BaseJob record so the result can be assembled by the same
+        # from_base_job path used by the local queue worker.
+        job_record = BaseJob(id=job["id"])
+        job_record.metrics.started_at = datetime.now(timezone.utc)
 
         try:
-            # Execute the function (Sync or Async Handling)
-            res = self._execute_route_function(route_function, kwargs)
+            res = self.run_callable(route_function, **kwargs)
 
-            # Check if result is a generator (streaming response)
+            # Streaming response: hand the generator straight to RunPod, which
+            # aggregates it (no JobResult envelope is produced for streams).
             if inspect.isgenerator(res) or inspect.isasyncgen(res):
-                # For streaming, return the generator directly
-                # RunPod will handle the streaming
                 return res
 
-            # Convert result to JSON if it's a MediaFile / MediaList / Pydantic Model
-            res = JobResultFactory._serialize_result(res)
-
-            result.result = res
-            result.status = _job_status_to_public(JOB_STATUS.FINISHED)
+            job_record.result = res
+            job_record.status = JOB_STATUS.FINISHED
         except Exception as e:
-            result.error = str(e)
-            result.status = _job_status_to_public(JOB_STATUS.FAILED)
+            job_record.error = str(e)
+            job_record.status = JOB_STATUS.FAILED
             print(f"Job {job['id']} failed: {str(e)}")
             traceback.print_exc()
 
+        # Adopt the progress handle the function reported through, so its final
+        # progress/message flow into the JobResult.
         for arg in kwargs.values():
             if isinstance(arg, JobProgressRunpod):
-                result.progress = float(arg._progress)
-                result.message = arg._message
+                job_record.job_progress = arg
                 break
 
-        inference_time_s = _compute_duration_s(start_time, datetime.now(timezone.utc))
-        if inference_time_s is not None:
-            result.metrics = JobMetrics(inference_time_s=inference_time_s)
+        job_record.metrics.finished_at = datetime.now(timezone.utc)
 
-        return result.model_dump_json(exclude_none=True)
-
-    def _execute_route_function(self, route_function, kwargs):
-        """
-        Execute a route function, handling both sync and async functions.
-        
-        Args:
-            route_function: The function to execute
-            kwargs: Keyword arguments to pass to the function
-            
-        Returns:
-            The result of the function execution
-        """
-        if not inspect.iscoroutinefunction(route_function):
-            # Synchronous function - simple execution
-            return route_function(**kwargs)
-        
-        # Async function - need event loop handling
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Already in async context - shouldn't happen in RunPod handler
-                # But if it does, we need to handle it differently
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        asyncio.run, 
-                        route_function(**kwargs)
-                    )
-                    return future.result()
-            else:
-                # Loop exists but not running - use it
-                return loop.run_until_complete(route_function(**kwargs))
-        except RuntimeError:
-            # No event loop exists - create one
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(route_function(**kwargs))
-            finally:
-                loop.close()
-                asyncio.set_event_loop(None)
+        return JobResultFactory.from_base_job(job_record).model_dump_json(exclude_none=True)
 
     def handler(self, job):
         """

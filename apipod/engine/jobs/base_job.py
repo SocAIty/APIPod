@@ -7,42 +7,46 @@ from apipod.engine.jobs.job_progress import JobProgress
 
 
 class JOB_STATUS(Enum):
-    QUEUED = "Queued"
-    PROCESSING = "Processing"
-    STREAMING = "Streaming"
-    FINISHED = "Finished"
-    FAILED = "Failed"
-    TIMEOUT = "Timeout"
+    """Lifecycle states of a job. The value is the public API status string."""
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    STREAMING = "streaming"
+    FINISHED = "finished"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
 
 
-class PROVIDERS(Enum):
-    RUNPOD = "runpod"
-    OPENAI = "openai"
-    REPLICATE = "replicate"
+class JobMetrics:
+    """Storage for all job timing and performance data."""
+
+    def __init__(self):
+        self.created_at: datetime = datetime.now(timezone.utc)
+        self.queued_at: Optional[datetime] = None
+        self.started_at: Optional[datetime] = None
+        self.finished_at: Optional[datetime] = None
+        self.time_out_at: Optional[datetime] = None
+
+    @property
+    def execution_time_s(self) -> Optional[float]:
+        if self.started_at and self.finished_at:
+            delta = (self.finished_at - self.started_at).total_seconds()
+            return round(delta, 2) if delta >= 0 else 0.0
+        return None
 
 
 class BaseJob:
-    """Essential job record shared by all job types (local thread, remote service, etc.).
-
-    Subclasses add domain-specific fields:
-
-    * :class:`LocalJob` — thread-pool execution (``job_function``, ``job_progress``).
-    * Platform-specific subclasses (e.g. gateway ``ServiceJob``) — remote/Redis
-      (``service_id``, ``api_url``, ``endpoint``, ``input_data``).
-
-    :class:`~apipod.engine.jobs.job_result.JobResultFactory.from_base_job` maps any
-    ``BaseJob`` subclass to the public :class:`~apipod.engine.jobs.job_result.JobResult`.
+    """
+    Essential job record shared by all job types (local thread, remote service, etc.).
+    Subclass to add domain-specific fields like service_id, endpoint, etc.
     """
 
-    def __init__(self, id=None, status="pending", created_at=None, updated_at=None):
+    def __init__(self, id: Optional[str] = None):
         self.id: str = id or str(uuid4())
-        self.status = status
+        self.status = JOB_STATUS.QUEUED
         self.result: Any = None
         self.error: Optional[str] = None
-        self.created_at = created_at or datetime.now(timezone.utc)
-        self.updated_at = updated_at or datetime.now(timezone.utc)
-        self.progress: Optional[float] = None
-        self.message: Optional[str] = None
+        self.job_progress = JobProgress()
+        self.metrics = JobMetrics()
 
 
 class LocalJob(BaseJob):
@@ -51,31 +55,13 @@ class LocalJob(BaseJob):
     """
 
     def __init__(self, job_function: callable, job_params: Optional[dict] = None, timeout_seconds: int = 3600):
-        super().__init__(status=JOB_STATUS.QUEUED)
+        super().__init__()
         self.job_function = job_function
         self.job_params: dict = job_params or {}
-        self.job_progress = JobProgress()
-
-        self.queued_at: Optional[datetime] = None
-        self.execution_started_at: Optional[datetime] = None
-        self.execution_finished_at: Optional[datetime] = None
-        self.time_out_at = self.created_at + timedelta(seconds=timeout_seconds)
+        self.metrics.time_out_at = self.metrics.created_at + timedelta(seconds=timeout_seconds)
 
     @property
     def is_timed_out(self) -> bool:
-        return datetime.now(timezone.utc) > self.time_out_at
-
-    @property
-    def execution_duration_ms(self) -> int:
-        if not self.execution_started_at:
-            return 0
-        end_time = self.execution_finished_at or datetime.now(timezone.utc)
-        return int((end_time - self.execution_started_at).total_seconds() * 1000)
-
-    @property
-    def delay_time_ms(self) -> int:
-        if not self.queued_at:
-            return int((datetime.now(timezone.utc) - self.created_at).total_seconds() * 1000)
-        if not self.execution_started_at:
-            return int((datetime.now(timezone.utc) - self.queued_at).total_seconds() * 1000)
-        return int((self.execution_started_at - self.created_at).total_seconds() * 1000)
+        if not self.metrics.time_out_at:
+            return False
+        return datetime.now(timezone.utc) > self.metrics.time_out_at

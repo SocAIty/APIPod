@@ -6,7 +6,6 @@ from apipod.engine.signatures.upload import is_param_media_toolkit_file
 from apipod.common.schemas.media_files import FileModel, ImageFileModel, AudioFileModel, VideoFileModel
 from apipod.engine.signatures.policies import FastAPISignaturePolicies
 from apipod.engine.files.base_file_mixin import _BaseFileHandlingMixin
-from apipod.engine.endpoint_config import EndpointExecutionPlan
 from apipod.engine.utils import replace_func_signature
 from media_toolkit import MediaList, MediaDict, ImageFile, AudioFile, VideoFile, MediaFile
 import functools
@@ -250,14 +249,9 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
         Wrap the function to inject a dummy JobProgress instance if the original
         function expects one. This is used for non-queued FastAPI endpoints.
         """
-        from apipod.engine.jobs.job_progress import JobProgress
-        
-        sig = inspect.signature(func)
-        job_progress_params = [
-            p.name for p in sig.parameters.values()
-            if p.name == "job_progress" or "JobProgress" in str(p.annotation)
-        ]
+        from apipod.engine.jobs.job_progress import JobProgress, job_progress_param_names
 
+        job_progress_params = job_progress_param_names(func)
         if not job_progress_params:
             return func
 

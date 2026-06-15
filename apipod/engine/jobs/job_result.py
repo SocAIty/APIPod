@@ -1,10 +1,10 @@
 import gzip
+from datetime import datetime
 from io import BytesIO
 from typing import Any, List, Optional, Union
 
 from pydantic import BaseModel
 
-from apipod.common.settings import DEFAULT_DATE_TIME_FORMAT
 from apipod.engine.jobs.base_job import JOB_STATUS, BaseJob
 from apipod.engine.signatures.upload import is_param_media_toolkit_file
 from media_toolkit import IMediaContainer
@@ -12,115 +12,36 @@ from media_toolkit.utils.data_type_utils import is_file_model_dict
 from apipod.common.schemas.media_files import FileModel
 
 
-def _job_status_to_public(status: Any) -> Optional[str]:
-    """Map internal JOB_STATUS (or legacy string) to public API strings (gateway-aligned)."""
+def _public_status(status: Any) -> Optional[str]:
+    """Public status string: a JOB_STATUS carries its own value; pass strings through."""
     if status is None:
         return None
-    if isinstance(status, JOB_STATUS):
-        return {
-            JOB_STATUS.QUEUED: "pending",
-            JOB_STATUS.PROCESSING: "processing",
-            JOB_STATUS.STREAMING: "streaming",
-            JOB_STATUS.FINISHED: "completed",
-            JOB_STATUS.FAILED: "failed",
-            JOB_STATUS.TIMEOUT: "failed",
-        }.get(status, status.value.lower())
-    if isinstance(status, str):
-        lowered = status.lower()
-        legacy = {
-            "queued": "pending",
-            "pending": "pending",
-            "processing": "processing",
-            "streaming": "streaming",
-            "finished": "completed",
-            "completed": "completed",
-            "failed": "failed",
-            "timeout": "failed",
-            "rejected": "failed",
-        }
-        return legacy.get(lowered, lowered)
-    return str(status)
-
-
-def _format_date(date: Any) -> Optional[str]:
-    """Format a datetime or ISO string for the public API."""
-    if date is None:
-        return None
-    if isinstance(date, str):
-        return date
-    try:
-        return date.strftime(DEFAULT_DATE_TIME_FORMAT)
-    except Exception:
-        return str(date)
-
-
-def _parse_iso(value: Any):
-    """Best-effort parse an ISO 8601 string or datetime into a datetime."""
-    if value is None:
-        return None
-    if hasattr(value, "timestamp"):
-        return value
-    try:
-        from datetime import datetime, timezone
-        dt = datetime.fromisoformat(str(value))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except (ValueError, TypeError):
-        return None
-
-
-def _compute_duration_s(start: Any, end: Any) -> Optional[float]:
-    """Compute seconds between two timestamps, returning None if either is missing."""
-    s, e = _parse_iso(start), _parse_iso(end)
-    if s is None or e is None:
-        return None
-    delta = (e - s).total_seconds()
-    return round(delta, 2) if delta >= 0 else None
-
-
-def _opt_float(value: Any) -> Optional[float]:
-    """Coerce to positive float, else None."""
-    if value is None:
-        return None
-    try:
-        f = float(value)
-        return round(f, 3) if f > 0 else None
-    except (ValueError, TypeError):
-        return None
+    return status.value if isinstance(status, JOB_STATUS) else str(status)
 
 
 class JobLinks(BaseModel):
     """Hypermedia links for job status polling, cancellation, and streaming."""
-
     status: Optional[str] = None
     cancel: Optional[str] = None
     stream: Optional[str] = None
 
 
 class JobMetrics(BaseModel):
-    """Performance metrics populated as a job progresses through the platform.
-
-    Segments (chronological):
-        upload_time_s          – file upload duration (gateway)
-        platform_queue_time_s  – our validation + dispatch + Celery routing
-        provider_queue_time_s  – provider-side GPU / resource wait
-        inference_time_s       – actual model execution
-        execution_time_s       – orchestrator end-to-end (queue + inference, excludes upload)
-    """
-
+    """Execution metrics APIPod measures for a job."""
+    created_at: Optional[datetime] = None
+    queued_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
     execution_time_s: Optional[float] = None
-    inference_time_s: Optional[float] = None
-    platform_queue_time_s: Optional[float] = None
-    provider_queue_time_s: Optional[float] = None
-    upload_time_s: Optional[float] = None
 
 
 class JobResult(BaseModel):
     """Public job snapshot returned by GET /status and job submissions.
 
     Unified response: same shape whether the client just submitted a job
-    (``status="pending"``) or is polling for completion.
+    (``status="queued"``) or is polling for completion. The ``status`` values
+    mirror :class:`~apipod.engine.jobs.base_job.JOB_STATUS`
+    (``queued``/``processing``/``streaming``/``finished``/``failed``/``timeout``).
 
     Null fields are excluded from the serialized response so the client
     only receives relevant information for the current job state.
@@ -132,9 +53,6 @@ class JobResult(BaseModel):
     error: Optional[str] = None
     progress: Optional[float] = None
     message: Optional[str] = None
-
-    service: Optional[str] = None
-    endpoint: Optional[str] = None
 
     metrics: Optional[JobMetrics] = None
     links: Optional[JobLinks] = None
@@ -176,75 +94,29 @@ class JobResultFactory:
 
     @staticmethod
     def from_base_job(job: BaseJob) -> JobResult:
-        """Map any :class:`BaseJob` subclass to the public :class:`JobResult`.
-
-        Works for :class:`~apipod.engine.jobs.base_job.LocalJob` (thread queue)
-        and any platform ``BaseJob`` subclass (e.g. gateway ``ServiceJob``).
-        """
-        status = _job_status_to_public(job.status)
-        result = JobResultFactory._serialize_result(job.result)
-
-        progress = job.progress
-        message = job.message
-
-        job_progress = getattr(job, "job_progress", None)
-        if job_progress is not None:
-            try:
-                progress = float(job_progress._progress)
-                message = job_progress._message
-            except Exception:
-                pass
-
-        service = getattr(job, "service_id", None)
-        endpoint = getattr(job, "endpoint", None)
-
-        metrics = JobResultFactory._build_metrics(job)
-
-        links = JobLinks(
-            status=f"/status/{job.id}",
-            cancel=f"/cancel/{job.id}",
-            stream=f"/stream/{job.id}",
+        """Map a :class:`BaseJob` to the public :class:`JobResult`."""
+        m = job.metrics
+        metrics = JobMetrics(
+            created_at=m.created_at,
+            queued_at=m.queued_at,
+            started_at=m.started_at,
+            finished_at=m.finished_at,
+            execution_time_s=m.execution_time_s,
         )
 
         return JobResult(
             job_id=job.id,
-            status=status,
+            status=_public_status(job.status),
+            result=JobResultFactory._serialize_result(job.result),
             error=job.error,
-            result=result,
-            progress=progress,
-            message=message,
-            service=service,
-            endpoint=endpoint,
+            progress=job.job_progress.progress,
+            message=job.job_progress.message,
             metrics=metrics,
-            links=links,
-        )
-
-    @staticmethod
-    def _build_metrics(job: BaseJob) -> Optional[JobMetrics]:
-        """Derive timing metrics from orchestrator-provided values or timestamps."""
-        execution_time_s = _opt_float(getattr(job, "execution_time_s", None)) or _compute_duration_s(
-            getattr(job, "created_at", None),
-            getattr(job, "completed_at", None) or getattr(job, "failed_at", None),
-        )
-        upload_time_s = _compute_duration_s(
-            getattr(job, "upload_started_at", None),
-            getattr(job, "upload_finished_at", None),
-        )
-        inference_time_s = _opt_float(getattr(job, "inference_time_s", None))
-        platform_queue_time_s = _opt_float(getattr(job, "platform_queue_time_s", None))
-        provider_queue_time_s = _opt_float(getattr(job, "provider_queue_time_s", None))
-
-        values = (execution_time_s, upload_time_s, inference_time_s,
-                  platform_queue_time_s, provider_queue_time_s)
-        if all(v is None for v in values):
-            return None
-
-        return JobMetrics(
-            execution_time_s=execution_time_s,
-            inference_time_s=inference_time_s,
-            platform_queue_time_s=platform_queue_time_s,
-            provider_queue_time_s=provider_queue_time_s,
-            upload_time_s=upload_time_s,
+            links=JobLinks(
+                status=f"/status/{job.id}",
+                cancel=f"/cancel/{job.id}",
+                stream=f"/stream/{job.id}",
+            ),
         )
 
     @staticmethod

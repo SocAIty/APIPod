@@ -6,10 +6,9 @@ from typing import Dict, Optional, TypeVar, Tuple
 
 from apipod.engine.queue.job_store import JobStore
 from apipod.engine.jobs.base_job import BaseJob, LocalJob, JOB_STATUS
-from apipod.engine.jobs.job_result import _job_status_to_public
+from apipod.engine.jobs.job_progress import job_progress_param_names
 from apipod.engine.queue.job_queue_interface import JobQueueInterface
 from apipod.engine.streaming.stream_producer import StreamProducer
-import inspect
 
 T = TypeVar('T', bound=BaseJob)
 
@@ -51,7 +50,7 @@ class JobQueue(JobQueueInterface[T]):
         job = self.job_store.get_job(job_id)
         if job is None:
             return None
-        return {"id": job_id, "status": _job_status_to_public(job.status)}
+        return {"id": job_id, "status": getattr(job.status, "value", job.status)}
 
     def set_queue_size(self, job_function: callable, queue_size: int = 500) -> None:
         self.queue_sizes[job_function.__name__] = queue_size
@@ -86,7 +85,7 @@ class JobQueue(JobQueueInterface[T]):
             return job
 
         job.status = JOB_STATUS.QUEUED
-        job.queued_at = datetime.now(timezone.utc)
+        job.metrics.queued_at = datetime.now(timezone.utc)
         self.job_store.add_to_queue(job)
 
         if not self.worker_thread.is_alive():
@@ -105,7 +104,7 @@ class JobQueue(JobQueueInterface[T]):
 
     def _process_job(self, job: T) -> None:
         try:
-            job.execution_started_at = datetime.now(timezone.utc)
+            job.metrics.started_at = datetime.now(timezone.utc)
             job.status = JOB_STATUS.PROCESSING
 
             self._inject_job_progress(job)
@@ -164,7 +163,7 @@ class JobQueue(JobQueueInterface[T]):
     def _complete_job(self, job: T, final_state: JOB_STATUS) -> T:
         self.job_store.complete_job(job.id)
         # setting status here, because if this is done earlier, race conditions in get_job are the problem
-        job.execution_finished_at = datetime.now(timezone.utc)
+        job.metrics.finished_at = datetime.now(timezone.utc)
         job.status = final_state
         return job
 
@@ -181,15 +180,8 @@ class JobQueue(JobQueueInterface[T]):
         #    self._complete_job(job_id)
 
     def _inject_job_progress(self, job: T) -> T:
-        sig = inspect.signature(job.job_function)
-
-        job_progress_params = [
-            p for p in sig.parameters.values()
-            if p.name == "job_progress" or "JobProgress" in str(p.annotation)
-        ]
-        for job_progress_param in job_progress_params:
-            job.job_params[job_progress_param.name] = job.job_progress
-
+        for param_name in job_progress_param_names(job.job_function):
+            job.job_params[param_name] = job.job_progress
         return job
 
     def _process_jobs_in_background(self) -> None:
@@ -244,9 +236,9 @@ class JobQueue(JobQueueInterface[T]):
             return
 
         for job in self.job_store.completed_jobs:
-            if job.execution_finished_at is None:
+            if job.metrics.finished_at is None:
                 self._remove_job(job)
-            elif (datetime.now(timezone.utc) - job.execution_finished_at).total_seconds() > self._delete_orphan_jobs_after_seconds:
+            elif (datetime.now(timezone.utc) - job.metrics.finished_at).total_seconds() > self._delete_orphan_jobs_after_seconds:
                 self._remove_job(job)
 
     def _start_queued_jobs(self) -> None:

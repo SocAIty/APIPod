@@ -2,9 +2,9 @@
 FastAPI-specific streaming transport, factored out of the router.
 
 This mixin owns the FastAPI-side mechanics for turning a streaming endpoint
-result into an HTTP response:
+result into an HTTP response (execution itself goes through the shared
+``_BaseBackend.run_callable`` / ``run_callable_async`` runtime):
 
-- ``_execute_func`` — run a sync or async function without blocking the event loop;
 - ``_stream_generator`` — adapt a sync/async generator into an async generator
   for :class:`StreamingResponse` (direct non-queued path);
 - ``_streaming_response_from_producer`` — build a :class:`StreamingResponse` from
@@ -44,13 +44,6 @@ class _FastAPIStreamingMixin:
     # ------------------------------------------------------------------
     # Execution helpers
     # ------------------------------------------------------------------
-
-    async def _execute_func(self, func, **kwargs):
-        """Execute a function, handling both sync and async callables."""
-        if inspect.iscoroutinefunction(func):
-            return await func(**kwargs)
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, functools.partial(func, **kwargs))
 
     async def _stream_generator(self, result):
         """Adapt a sync or async generator into an async generator for StreamingResponse."""
@@ -105,7 +98,7 @@ class _FastAPIStreamingMixin:
         def decorator(func: Callable) -> Callable:
             @functools.wraps(func)
             async def streaming_wrapper(*w_args, **w_kwargs):
-                result = await self._execute_func(func, *w_args, **w_kwargs)
+                result = await self.run_callable_async(func, *w_args, **w_kwargs)
                 generator = self._stream_generator(result)
 
                 headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
@@ -144,7 +137,7 @@ class _FastAPIStreamingMixin:
 
         # Allow any not-yet-finished state; read_chunks waits for the producer.
         st = ((job_data.get("status") if job_data else "") or "").lower()
-        if not stream_open and st not in {"pending", "processing", "streaming"}:
+        if not stream_open and st not in {"queued", "processing", "streaming"}:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Job '{job_id}' is not streaming (status: {st or 'unknown'}).",

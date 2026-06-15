@@ -53,14 +53,12 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             job_queue: Optional custom JobQueue implementation
             lifespan: Optional async context manager for custom startup/shutdown logic
             args: Additional arguments
-            kwargs: May include ``stream_store`` (SSE backend for GET /stream/{job_id}) and
-                ``gateway_stream_url_prefix`` for absolute stream URLs in JobResult, plus
-                additional keyword arguments for parent classes.
+            kwargs: May include ``stream_store`` (SSE backend for GET /stream/{job_id}),
+                plus additional keyword arguments for parent classes.
         """
         # Extract user-provided lifespan (explicit param or kwarg) before parent init
         user_lifespan = lifespan or kwargs.pop('lifespan', None)
         stream_store = kwargs.pop("stream_store", None)
-        gateway_stream_url_prefix = kwargs.pop("gateway_stream_url_prefix", "")
 
         # Initialize parent classes
         api_router_params = inspect.signature(APIRouter.__init__).parameters
@@ -99,7 +97,6 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         self.app: FastAPI = app
         self.prefix = prefix
         self.stream_store = stream_store
-        self.gateway_stream_url_prefix = gateway_stream_url_prefix
 
         # Let the queue produce streaming job output into the stream store so a
         # client can consume it via GET /stream/{job_id} (serverless emulation).
@@ -339,7 +336,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         """
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
-            result = func(*args, **kwargs)
+            result = self.run_callable(func, *args, **kwargs)
 
             producer = build_stream_producer(result, plan.schema_binding)
             if producer is not None:
@@ -381,7 +378,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
                 self._job_func_registry[func.__name__] = func
             except Exception:
                 pass
-        
+
             upload_enabled = self._prepare_func_for_media_file_upload_with_fastapi(queue_decorated, plan.max_upload_file_size_mb)
             return fastapi_route_decorator(upload_enabled)
 
