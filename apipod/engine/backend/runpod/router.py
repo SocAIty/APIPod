@@ -23,7 +23,7 @@ from apipod.engine.backend.schema_resolve import (
 from apipod.engine.streaming.stream_serializer import as_sync_iter, encode_chunk, is_streaming_result
 
 from apipod.engine.utils import normalize_name
-from apipod.common.settings import APIPOD_PROVIDER, APIPOD_PORT
+from apipod.common.settings import APIPOD_PORT
 from media_toolkit import AudioFile, VideoFile
 
 
@@ -32,9 +32,12 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
     Adds routing functionality for the runpod serverless framework.
     Provides enhanced file handling and conversion capabilities.
     """
-    def __init__(self, title: str = "APIPod for ", summary: str = None, *args, **kwargs):
+    def __init__(self, title: str = "APIPod for ", summary: str = None, simulate: bool = False, *args, **kwargs):
         super().__init__(title=title, summary=summary, *args, **kwargs)
 
+        # When True, start() runs RunPod's local API emulator instead of the real
+        # serverless worker (set by APIPod(simulate="serverless-runpod", direct=True)).
+        self.simulate = simulate
         self.routes = {}  # routes are organized like {"ROUTE_NAME": "ROUTE_FUNCTION"}
 
         self.add_standard_routes()
@@ -405,13 +408,13 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
 
         return schema
 
-    def start(self, port: int = APIPOD_PORT, provider: Union[constants.PROVIDER, str, None] = None, *args, **kwargs):
-        if provider is None:
-            provider = APIPOD_PROVIDER
-        if isinstance(provider, str):
-            provider = constants.PROVIDER(provider)
+    def start(self, port: int = APIPOD_PORT, **kwargs):
+        """Start the RunPod worker.
 
-        if provider == constants.PROVIDER.LOCALHOST:
+        In simulation (``APIPod(simulate="serverless-runpod", direct=True)``) RunPod's
+        local API emulator is used. In a managed deployment the real serverless worker runs.
+        """
+        if self.simulate:
             self.start_runpod_serverless_localhost(port=port)
         else:
             import runpod.serverless

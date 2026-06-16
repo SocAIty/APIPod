@@ -1,117 +1,74 @@
 from apipod import APIPod
-from apipod.common import constants
 from apipod.engine.backend.fastapi.router import SocaityFastAPIRouter
 from apipod.engine.backend.runpod.router import SocaityRunpodRouter
-import os
 
 
-def test_socaity_dedicated_auto():
-    # socaity | dedicated | auto -> FastAPI
-    app = APIPod(orchestrator="socaity", compute="dedicated", provider="auto")
+def test_development_default():
+    # APIPod() -> plain FastAPI, no job queue.
+    app = APIPod()
     assert isinstance(app, SocaityFastAPIRouter)
     assert app.job_queue is None
 
 
-def test_socaity_dedicated_localhost():
-    # socaity | dedicated | localhost -> FastAPI + job queue (test mode)
-    app = APIPod(orchestrator="socaity", compute="dedicated", provider="localhost")
-    assert isinstance(app, SocaityFastAPIRouter)
-    assert app.job_queue is not None
+def test_simulate_serverless_default():
+    # simulate (bare / "serverless") -> FastAPI + Local Job Queue.
+    for target in ("", "serverless"):
+        app = APIPod(simulate=target)
+        assert isinstance(app, SocaityFastAPIRouter)
+        assert app.job_queue is not None
 
 
-def test_socaity_dedicated_planned_celery():
-    # socaity | dedicated | runpod/scaleway/azure -> Celery (planned)
-    for provider in ["runpod", "scaleway", "azure"]:
-        try:
-            APIPod(orchestrator="socaity", compute="dedicated", provider=provider)
-            assert False
-        except NotImplementedError as e:
-            assert "planned" in str(e)
-
-
-def test_socaity_serverless_auto():
-    # socaity | serverless | auto -> RunPod router
-    app = APIPod(orchestrator="socaity", compute="serverless", provider="auto")
-    assert isinstance(app, SocaityRunpodRouter)
-
-
-def test_socaity_serverless_localhost():
-    # socaity | serverless | localhost -> FastAPI + job queue (test mode)
-    app = APIPod(orchestrator="socaity", compute="serverless", provider="localhost")
-    assert isinstance(app, SocaityFastAPIRouter)
-    assert app.job_queue is not None
-
-
-def test_socaity_serverless_runpod():
-    # socaity | serverless | runpod -> RunPod router
-    app = APIPod(orchestrator="socaity", compute="serverless", provider="runpod")
-    assert isinstance(app, SocaityRunpodRouter)
-
-
-def test_socaity_serverless_unsupported():
-    # socaity | serverless | scaleway/azure -> Not supported
-    for provider in ["scaleway", "azure"]:
-        try:
-            APIPod(orchestrator="socaity", compute="serverless", provider=provider)
-            assert False
-        except NotImplementedError as e:
-            assert "not supported" in str(e) or "not implemented" in str(e)
-
-
-def test_local_dedicated():
-    # local | dedicated | * -> FastAPI
-    app = APIPod(orchestrator="local", compute="dedicated", provider="localhost")
+def test_simulate_dedicated():
+    # dedicated -> Standard FastAPI (no queue).
+    app = APIPod(simulate="dedicated")
     assert isinstance(app, SocaityFastAPIRouter)
     assert app.job_queue is None
 
 
-def test_local_serverless_localhost():
-    # local | serverless | localhost -> FastAPI + job queue
-    app = APIPod(orchestrator="local", compute="serverless", provider="localhost")
+def test_simulate_dedicated_azure():
+    # dedicated-azure -> FastAPI (direct client), no queue.
+    app = APIPod(simulate="dedicated-azure")
+    assert isinstance(app, SocaityFastAPIRouter)
+    assert app.job_queue is None
+
+
+def test_simulate_serverless_runpod():
+    # serverless-runpod (no direct) -> Socaity emulation = FastAPI + job queue.
+    app = APIPod(simulate="serverless-runpod")
     assert isinstance(app, SocaityFastAPIRouter)
     assert app.job_queue is not None
 
 
-def test_local_serverless_runpod():
-    # local | serverless | runpod -> RunPod router
-    app = APIPod(orchestrator="local", compute="serverless", provider="runpod")
+def test_simulate_serverless_runpod_direct():
+    # serverless-runpod + direct -> RunPod local emulation.
+    app = APIPod(simulate="serverless-runpod", direct=True)
     assert isinstance(app, SocaityRunpodRouter)
+    assert app.simulate is True
 
 
-def test_local_serverless_unsupported():
-    # local | serverless | scaleway/azure -> Not supported
-    for provider in ["scaleway", "azure"]:
+def test_simulate_serverless_azure_warns_and_falls_back():
+    # azure has no serverless -> FastAPI + job queue (with warning).
+    app = APIPod(simulate="serverless-azure")
+    assert isinstance(app, SocaityFastAPIRouter)
+    assert app.job_queue is not None
+
+
+def test_invalid_target_values():
+    for target in ("invalid", "serverless-invalid"):
         try:
-            APIPod(orchestrator="local", compute="serverless", provider=provider)
+            APIPod(simulate=target)
             assert False
-        except NotImplementedError as e:
-            assert "not supported" in str(e) or "not implemented" in str(e)
-
-
-def test_invalid_enum_values():
-    try:
-        APIPod(orchestrator="invalid")
-        assert False
-    except ValueError as e:
-        assert "Invalid ORCHESTRATOR" in str(e)
-
-    try:
-        APIPod(compute="invalid")
-        assert False
-    except ValueError as e:
-        assert "Invalid COMPUTE" in str(e)
+        except ValueError as e:
+            assert "Invalid" in str(e)
 
 
 if __name__ == "__main__":
-    test_socaity_dedicated_auto()
-    test_socaity_dedicated_localhost()
-    test_socaity_dedicated_planned_celery()
-    test_socaity_serverless_auto()
-    test_socaity_serverless_localhost()
-    test_socaity_serverless_runpod()
-    test_socaity_serverless_unsupported()
-    test_local_dedicated()
-    test_local_serverless_localhost()
-    test_local_serverless_runpod()
-    test_local_serverless_unsupported()
-    test_invalid_enum_values()
+    test_development_default()
+    test_simulate_serverless_default()
+    test_simulate_dedicated()
+    test_simulate_dedicated_azure()
+    test_simulate_serverless_runpod()
+    test_simulate_serverless_runpod_direct()
+    test_simulate_serverless_azure_warns_and_falls_back()
+    test_invalid_target_values()
+    print("All config resolution tests passed.")

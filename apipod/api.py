@@ -1,162 +1,133 @@
-from apipod.common import constants
-from apipod.common.settings import APIPOD_ORCHESTRATOR, APIPOD_COMPUTE, APIPOD_PROVIDER
-from apipod.engine.base_backend import _BaseBackend
-from apipod.engine.backend.runpod.router import SocaityRunpodRouter
-from apipod.engine.backend.fastapi.router import SocaityFastAPIRouter
-from apipod.engine.queue.job_queue_interface import JobQueueInterface
+from typing import Optional, Tuple, Union
 
-from typing import Union
+from apipod.common.constants import COMPUTE, PROVIDER
+from apipod.common.settings import (
+    APIPOD_COMPUTE,
+    APIPOD_DIRECT,
+    APIPOD_PROVIDER,
+    APIPOD_SIMULATE,
+    IS_MANAGED_DEPLOYMENT,
+)
+from apipod.engine.backend.fastapi.router import SocaityFastAPIRouter
+from apipod.engine.backend.runpod.router import SocaityRunpodRouter
+
+# (backend_class, use_job_queue, runpod_simulate)
+_Resolution = Tuple[type, bool, bool]
+
+_NO_SERVERLESS = (PROVIDER.AZURE, PROVIDER.SCALEWAY)
 
 
 def APIPod(
-        orchestrator: Union[constants.ORCHESTRATOR, str, None] = None,
-        compute: Union[constants.COMPUTE, str, None] = None,
-        provider: Union[constants.PROVIDER, str, None] = None,
+        simulate: Union[str, None] = None,
+        direct: Union[bool, None] = None,
         *args, **kwargs
-) -> Union[_BaseBackend, SocaityRunpodRouter, SocaityFastAPIRouter]:
+) -> Union[SocaityFastAPIRouter, SocaityRunpodRouter]:
     """
-    Initialize an APIPod router with the appropriate backend based on the deployment configuration.
+    Build the right backend for an APIPod service from a single *intent*.
 
-    The resulting backend is determined by the combination of orchestrator, compute, and provider:
+    Socaity is the implicit orchestrator, so you never wire infrastructure by hand.
+    You only pick how the service should run *locally*:
 
-    | Orchestrator | Compute    | Provider  | Backend                    |
-    |------------- |----------- |---------- |--------------------------- |
-    | socaity      | dedicated  | auto      | FastAPI                    |
-    | socaity      | dedicated  | localhost | FastAPI + job queue (test) |
-    | socaity      | dedicated  | socaity   | FastAPI + redis (prod)     |
-    | socaity      | dedicated  | runpod    | Celery (planned)           |
-    | socaity      | dedicated  | scaleway  | Celery (planned)           |
-    | socaity      | dedicated  | azure     | Celery (planned)           |
-    | socaity      | serverless | auto      | RunPod router              |
-    | socaity      | serverless | localhost | FastAPI + job queue (test) |
-    | socaity      | serverless | runpod    | RunPod router              |
-    | socaity      | serverless | scaleway  | Not supported              |
-    | socaity      | serverless | azure     | Not supported              |
-    | local/None   | dedicated  | *         | FastAPI                    |
-    | local/None   | serverless | localhost | FastAPI + job queue        |
-    | local/None   | serverless | runpod    | RunPod router              |
-    | local/None   | serverless | scaleway  | Not supported              |
-    | local/None   | serverless | azure     | Not supported              |
+    - **Development** (default, ``APIPod()``): plain FastAPI — the fastest loop.
+    - **Simulation** (``simulate="{compute}-{provider}"``): emulate a deployment
+      locally. The target collapses compute + provider, e.g. ``"serverless"``,
+      ``"serverless-runpod"``, ``"dedicated-azure"``. Compute defaults to
+      ``serverless``. ``direct=True`` bypasses Socaity to emulate the provider's
+      own serverless worker (currently RunPod).
+
+    In a **managed deployment** (``SOCAITY_DEPLOYMENT_CERT`` verified) ``simulate``
+    and ``direct`` are ignored: Socaity injects ``APIPOD_COMPUTE`` /
+    ``APIPOD_PROVIDER`` and the real backend is selected from them.
 
     Args:
-        orchestrator: "socaity" or "local" (default from env / local).
-        compute: "dedicated" or "serverless" (default from env / dedicated).
-        provider: "auto", "localhost", "socaity", "runpod", "scaleway", "azure" (default from env / localhost).
+        simulate: deployment target to emulate, ``"{compute}-{provider}"``.
+            ``None`` runs plain FastAPI for development.
+        direct: emulate the provider's native serverless worker instead of the
+            Socaity job-queue emulation. Only affects ``serverless-runpod``.
     """
-    orchestrator = _resolve_enum(orchestrator, constants.ORCHESTRATOR, APIPOD_ORCHESTRATOR, constants.ORCHESTRATOR.LOCAL)
-    compute = _resolve_enum(compute, constants.COMPUTE, APIPOD_COMPUTE, constants.COMPUTE.DEDICATED)
-    provider = _resolve_enum(provider, constants.PROVIDER, APIPOD_PROVIDER, constants.PROVIDER.LOCALHOST)
+    if IS_MANAGED_DEPLOYMENT:
+        backend_class, use_job_queue, runpod_simulate = _resolve_managed()
+    else:
+        backend_class, use_job_queue, runpod_simulate = _resolve_intent(simulate, direct)
 
-    backend_class, use_job_queue = _resolve_backend(orchestrator, compute, provider)
+    if backend_class is SocaityRunpodRouter:
+        return SocaityRunpodRouter(simulate=runpod_simulate, *args, **kwargs)
 
-    custom_job_queue = kwargs.pop("job_queue", None)
-    if custom_job_queue:
+    # FastAPI backend: a job queue (+ stream store) turns it into the serverless
+    # emulation; without one it is plain FastAPI. A deployment may inject its own.
+    job_queue = kwargs.pop("job_queue", None)
+    if job_queue is not None:
         use_job_queue = True
-        job_queue = custom_job_queue
-    else:
+    elif use_job_queue:
         from apipod.engine.queue.job_queue import JobQueue
-        job_queue = JobQueue() if use_job_queue else None
+        job_queue = JobQueue()
 
-    if backend_class == SocaityFastAPIRouter:
-        # Streaming (serverless emulation): when a queue runs, the worker relays
-        # streaming output into a stream store consumed via GET /stream/{job_id}.
-        # Default to the in-memory LocalStreamStore; a deployment can inject its
-        # own (e.g. Redis-backed) store. Plain FastAPI (no queue) streams directly
-        # and uses no stream store.
-        if use_job_queue and "stream_store" not in kwargs:
-            kwargs["stream_store"] = _create_stream_store()
-        return backend_class(job_queue=job_queue, *args, **kwargs)
-    else:
-        return backend_class(*args, **kwargs)
+    if use_job_queue and "stream_store" not in kwargs:
+        kwargs["stream_store"] = _create_stream_store()
+
+    return SocaityFastAPIRouter(job_queue=job_queue, *args, **kwargs)
 
 
-def _resolve_enum(value, enum_cls, env_default, fallback):
-    """Coerce a value into an enum member, falling back through env default and hard default."""
-    if value is None:
-        value = env_default
-    if isinstance(value, str):
-        try:
-            return enum_cls(value)
-        except ValueError:
-            raise ValueError(f"Invalid {enum_cls.__name__} value: '{value}'. Choose from: {[e.value for e in enum_cls]}")
-    if isinstance(value, enum_cls):
-        return value
-    return fallback
+def _resolve_intent(simulate: Optional[str], direct: Optional[bool]) -> _Resolution:
+    """Resolve a local run (development or simulation) into a backend selection."""
+    target = APIPOD_SIMULATE if simulate is None else simulate
 
+    # Development: no simulation requested -> plain FastAPI.
+    if simulate is None and not APIPOD_SIMULATE:
+        return SocaityFastAPIRouter, False, False
 
-def _resolve_backend(
-    orchestrator: constants.ORCHESTRATOR,
-    compute: constants.COMPUTE,
-    provider: constants.PROVIDER,
-) -> tuple:
-    """
-    Apply the configuration matrix and return (backend_class, use_job_queue).
-    Raises for unsupported or not-yet-implemented combinations.
-    """
-    _raise_if_unsupported(compute, provider)
+    direct = APIPOD_DIRECT if direct is None else bool(direct)
+    compute, provider = _parse_target(target)
 
-    if orchestrator == constants.ORCHESTRATOR.SOCAITY:
-        return _resolve_socaity(compute, provider)
-
-    return _resolve_local(compute, provider)
-
-
-def _raise_if_unsupported(compute: constants.COMPUTE, provider: constants.PROVIDER):
-    unsupported = {
-        (constants.COMPUTE.SERVERLESS, constants.PROVIDER.SCALEWAY),
-        (constants.COMPUTE.SERVERLESS, constants.PROVIDER.AZURE),
-    }
-    if (compute, provider) in unsupported:
-        raise NotImplementedError(
-            f"Serverless compute on {provider.value} is not supported. "
-            f"Use provider='runpod' for serverless or switch to dedicated compute."
-        )
-
-
-def _resolve_socaity(compute: constants.COMPUTE, provider: constants.PROVIDER) -> tuple:
-    if compute == constants.COMPUTE.DEDICATED:
-        if provider == constants.PROVIDER.SOCAITY:
-            return SocaityFastAPIRouter, True
-
-        if provider in (constants.PROVIDER.RUNPOD, constants.PROVIDER.SCALEWAY, constants.PROVIDER.AZURE):
-            raise NotImplementedError(
-                f"Celery backend for socaity + dedicated + {provider.value} is planned but not yet available."
-            )
-        if provider == constants.PROVIDER.LOCALHOST:
-            return SocaityFastAPIRouter, True
-        # auto or any other -> FastAPI without queue
-        return SocaityFastAPIRouter, False
+    if compute is COMPUTE.DEDICATED:
+        # "Standard FastAPI"; with a named provider it emulates a direct client.
+        return SocaityFastAPIRouter, False, False
 
     # serverless
-    if provider == constants.PROVIDER.LOCALHOST:
-        return SocaityFastAPIRouter, True
-    # auto or runpod -> RunPod router
-    return SocaityRunpodRouter, False
+    if provider in _NO_SERVERLESS:
+        print(f"Warning: {provider.value} does not support serverless. "
+              f"Defaulting to FastAPI + Local Job Queue.")
+        return SocaityFastAPIRouter, True, False
+
+    if provider is PROVIDER.RUNPOD and direct:
+        # Emulate RunPod's native serverless worker locally.
+        return SocaityRunpodRouter, False, True
+
+    # Default serverless: Socaity emulation = FastAPI + Local Job Queue.
+    return SocaityFastAPIRouter, True, False
 
 
-def _resolve_local(compute: constants.COMPUTE, provider: constants.PROVIDER) -> tuple:
-    if compute == constants.COMPUTE.DEDICATED:
-        return SocaityFastAPIRouter, False
+def _resolve_managed() -> _Resolution:
+    """Pick the real production backend from the env vars Socaity injects."""
+    compute = COMPUTE(APIPOD_COMPUTE)
+    provider = PROVIDER(APIPOD_PROVIDER)
 
-    # serverless
-    if provider == constants.PROVIDER.LOCALHOST:
-        return SocaityFastAPIRouter, True
-    if provider == constants.PROVIDER.RUNPOD:
-        return SocaityRunpodRouter, False
-    # auto -> RunPod router (same default as socaity serverless auto)
-    if provider == constants.PROVIDER.AUTO:
-        return SocaityRunpodRouter, False
-
-    raise NotImplementedError(f"Unsupported configuration: local + serverless + {provider.value}")
+    if compute is COMPUTE.SERVERLESS and provider is PROVIDER.RUNPOD:
+        return SocaityRunpodRouter, False, False  # real serverless worker
+    if compute is COMPUTE.SERVERLESS:
+        return SocaityFastAPIRouter, True, False
+    return SocaityFastAPIRouter, False, False  # dedicated (queue injected if needed)
 
 
-def _create_job_queue() -> JobQueueInterface:
-    from apipod.engine.queue.job_queue import JobQueue
+def _parse_target(target: str) -> Tuple[COMPUTE, Optional[PROVIDER]]:
+    """Parse a ``"{compute}-{provider}"`` target. Provider is optional; compute defaults to serverless."""
+    if not target:
+        return COMPUTE.SERVERLESS, None
 
-    return JobQueue()
+    compute_str, _, provider_str = target.partition("-")
+    try:
+        compute = COMPUTE(compute_str)
+    except ValueError:
+        raise ValueError(f"Invalid compute '{compute_str}'. Choose from: {[c.value for c in COMPUTE]}")
+
+    if not provider_str:
+        return compute, None
+    try:
+        return compute, PROVIDER(provider_str)
+    except ValueError:
+        raise ValueError(f"Invalid provider '{provider_str}'. Choose from: {[p.value for p in PROVIDER]}")
 
 
 def _create_stream_store():
     from apipod.engine.streaming.local_stream_store import LocalStreamStore
-
     return LocalStreamStore()

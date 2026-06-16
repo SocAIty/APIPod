@@ -18,10 +18,10 @@ It sits in an ecosystem of three packages:
 
 ```
 apipod/
-├── api.py                  # APIPod() factory: resolves config → backend instance
+├── api.py                  # APIPod() factory: resolves intent → backend instance
 ├── common/
-│   ├── settings.py         # Env-driven config (APIPOD_ORCHESTRATOR / _COMPUTE / _PROVIDER, host, port)
-│   ├── constants.py        # Enums: ORCHESTRATOR, COMPUTE, PROVIDER, SERVER_HEALTH
+│   ├── settings.py         # Env-driven config (APIPOD_SIMULATE / _DIRECT / _COMPUTE / _PROVIDER, cert, host, port)
+│   ├── constants.py        # Enums: COMPUTE, PROVIDER, SERVER_HEALTH
 │   └── schemas/
 │       ├── schemas.py      # Standardized request/response models (OpenAI-compatible shapes)
 │       └── media_files.py  # FileModel + typed variants: pydantic mirrors of media-toolkit files
@@ -42,19 +42,31 @@ apipod/
 ## Core principles
 
 1. **One decorator, many execution modes.** Developers only write `@app.endpoint(...)`. The router inspects the function and decides how to run it. They never choose a "mode" explicitly — the signature is the contract.
-2. **Deployment is configuration, not code.** The same service file runs as a plain FastAPI app, a queued FastAPI app, or a RunPod serverless worker. `APIPod()` is a factory that picks the backend from `orchestrator` / `compute` / `provider` (constructor args or `APIPOD_*` env vars).
+2. **Deployment is intent, not code.** The same service file runs as a plain FastAPI app, a queued FastAPI app, or a RunPod serverless worker. `APIPod()` is a factory that picks the backend from a single *intent* (`simulate` / `direct`) locally, or from the `APIPOD_COMPUTE` / `APIPOD_PROVIDER` env vars Socaity injects in a managed deployment (see [Orchestrator, compute, provider](#orchestrator-compute-provider-and-simulate)).
 3. **Media files are objects, not bytes.** Endpoint authors annotate parameters with media-toolkit types (`ImageFile`, `AudioFile`, …) and receive parsed, ready-to-use objects — regardless of whether the client sent a multipart upload, a URL, or base64.
 4. **Standardized, OpenAI-compatible schemas.** Common AI payloads (chat, completion, embeddings, image/video/audio/3D generation, vision) have canonical pydantic schemas whose wire format mirrors the OpenAI API. The shape is provider-agnostic: any model can serve them; clients written against OpenAI-compatible tooling work without translation.
 5. **Long-running work returns a job, not a blocked connection.** With a queue configured, endpoints return a `JobResult` immediately; clients poll `/status/{job_id}` (fastSDK does this automatically) and can receive progress updates via `JobProgress`.
 
+## Orchestrator, compute, provider, and simulate
+
+Three concepts describe *where and how* a service runs. Historically developers had to set all three; they no longer do. Understanding them still helps when reading the code.
+
+- **Orchestrator** — *who routes and queues requests*. There is exactly one: **Socaity**. It is the implicit orchestrator that fronts the service, distributes jobs, and handles scaling/auth. It is no longer a flag. `--direct` is the one escape hatch: it *skips* Socaity to talk to a provider's native backend instead (e.g. RunPod's own serverless worker).
+- **Compute** (`COMPUTE`) — *the shape of the machine*: `serverless` (scale-to-zero, job-queue semantics) or `dedicated` (an always-on box, plain request/response).
+- **Provider** (`PROVIDER`) — *the cloud the compute lives on*: `runpod`, `azure`, `scaleway`, `localhost`, … Not every provider supports every compute (e.g. Azure has no serverless; APIPod warns and falls back to the job-queue emulation).
+
+A developer never assembles this matrix by hand. They express a single **intent**:
+
+- **Development** (`APIPod()` / `apipod --start`) — plain FastAPI, the fastest loop.
+- **Simulation** (`APIPod(simulate="{compute}-{provider}")` / `apipod --simulate ...`) — emulate a deployment **locally**, no code changes. The target string collapses compute + provider (`serverless`, `serverless-runpod`, `dedicated-azure`); compute defaults to `serverless`. `direct=True` emulates the provider's native worker instead of the Socaity queue.
+- **Managed deployment** — when the service runs on the platform, Socaity sets `SOCAITY_DEPLOYMENT_CERT` (SHA1 of a shared secret). When that cert verifies (`IS_MANAGED_DEPLOYMENT`), `simulate`/`direct` are ignored and the **real** backend is selected from the `APIPOD_COMPUTE` / `APIPOD_PROVIDER` env vars Socaity injects — so the serverless-RunPod path runs the *real* worker, not the emulator.
+
 ## Backend resolution
 
-`APIPod()` in `api.py` is not a class — it is a factory. It resolves the `(orchestrator, compute, provider)` triple (explicit args → env vars → defaults) against a support matrix and returns one of:
+`APIPod()` in `api.py` is not a class — it is a factory. It resolves the intent (managed → `_resolve_managed`, otherwise → `_resolve_intent`) into a `(backend_class, use_job_queue, runpod_simulate)` triple and returns one of:
 
-- **`SocaityFastAPIRouter`** — an `APIRouter` subclass bound to a `FastAPI` app. Used for dedicated compute and for local serverless emulation (then paired with an in-memory `JobQueue` plus a background worker thread started via the app lifespan).
-- **`SocaityRunpodRouter`** — a path-based dispatcher for RunPod serverless. There is no HTTP layer: RunPod delivers a JSON job whose `input.path` selects the registered function; the router converts files, injects `JobProgress`, executes, and returns a serialized `JobResult` (or a generator for streaming). It can also synthesize an OpenAPI schema by replaying the FastAPI signature conversion, so fastSDK clients can be generated against serverless deployments too.
-
-The full configuration matrix is documented in the main README and in the `APIPod()` docstring.
+- **`SocaityFastAPIRouter`** — an `APIRouter` subclass bound to a `FastAPI` app. Used for development and dedicated compute (no queue), and for the serverless emulation (paired with an in-memory `JobQueue` + `LocalStreamStore` and a background worker thread started via the app lifespan).
+- **`SocaityRunpodRouter`** — a path-based dispatcher for RunPod serverless. There is no HTTP layer: RunPod delivers a JSON job whose `input.path` selects the registered function; the router converts files, injects `JobProgress`, executes, and returns a serialized `JobResult` (or a generator for streaming). It can also synthesize an OpenAPI schema by replaying the FastAPI signature conversion, so fastSDK clients can be generated against serverless deployments too. Its `simulate` flag chooses between RunPod's local API emulator (`apipod --simulate serverless-runpod --direct`) and the real worker (managed deployment).
 
 ## The endpoint pipeline (FastAPI backend)
 
@@ -126,7 +138,7 @@ The **stream store** is the pluggable backend that buffers a job's chunks betwee
 
 ### Deployment
 
-`apipod build` (see `deploy/`) scans the project (entrypoint, dependencies, CUDA requirements) and generates a Dockerfile from compatible templates. The resulting container runs unchanged on dedicated hosts, on socaity.ai, or on RunPod serverless — only the `APIPOD_*` env vars differ.
+`apipod --build` (see `deploy/`) scans the project (entrypoint, dependencies, CUDA requirements) and generates a Dockerfile from compatible templates. The resulting container runs unchanged on dedicated hosts, on socaity.ai, or on RunPod serverless — only the env vars differ: Socaity injects `SOCAITY_DEPLOYMENT_CERT` plus `APIPOD_COMPUTE` / `APIPOD_PROVIDER` to select the real backend, while locally you drive the same paths with `APIPOD_SIMULATE` / `APIPOD_DIRECT` (set for you by `apipod --simulate`).
 
 ## Request lifecycle, end to end
 

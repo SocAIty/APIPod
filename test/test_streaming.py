@@ -1,7 +1,7 @@
 """
-Streaming over the serverless-localhost emulation.
+Streaming over the serverless emulation.
 
-APIPod on ``compute="serverless", provider="localhost"`` mimics a real
+APIPod on ``simulate="serverless"`` mimics a real
 deployment: streaming endpoints are queued, the in-process worker produces their
 chunks into a :class:`StreamStore` (the in-memory ``LocalStreamStore`` by
 default), and the client consumes them from ``GET /stream/{job_id}``. A client
@@ -35,8 +35,8 @@ CHAT_TOKENS = ["Hello", ", ", "world", "!"]
 
 
 def build_client() -> TestClient:
-    """Build a serverless-localhost app with streaming endpoints."""
-    app = APIPod(orchestrator="local", compute="serverless", provider="localhost")
+    """Build a serverless-emulation app with streaming endpoints."""
+    app = APIPod(simulate="serverless")
 
     @app.endpoint("/text")
     def stream_text():
@@ -91,11 +91,11 @@ def _collect_sse_data(client: TestClient, stream_url: str) -> list[str]:
 
 
 def test_default_stream_store_is_local():
-    """Serverless localhost gets a LocalStreamStore by default; plain FastAPI does not."""
-    serverless = APIPod(orchestrator="local", compute="serverless", provider="localhost")
+    """Serverless emulation gets a LocalStreamStore by default; plain FastAPI does not."""
+    serverless = APIPod(simulate="serverless")
     assert isinstance(serverless.stream_store, LocalStreamStore)
 
-    plain = APIPod(orchestrator="local", compute="dedicated", provider="localhost")
+    plain = APIPod(simulate="dedicated")
     assert plain.stream_store is None
 
 

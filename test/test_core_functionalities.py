@@ -9,7 +9,7 @@ from apipod import JobProgress
 from apipod import MediaFile, ImageFile, AudioFile, VideoFile, FileModel
 from fastapi import UploadFile as fastapiUploadFile
 
-app = APIPod(compute="serverless")
+app = APIPod(simulate="serverless")
 
 
 @app.post(path="/test_job_progress", queue_size=10)

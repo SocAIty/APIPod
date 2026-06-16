@@ -1,10 +1,11 @@
 import argparse
+import importlib.util
+import os
 import sys
 from pathlib import Path
 from typing import Optional
 
 from apipod.deploy.deployment_manager import DeploymentManager
-from apipod.common.constants import ORCHESTRATOR, COMPUTE, PROVIDER
 
 
 def input_yes_no(question: str, default: bool = True) -> bool:
@@ -19,6 +20,13 @@ def input_yes_no(question: str, default: bool = True) -> bool:
         if choice in valid:
             return valid[choice]
         sys.stdout.write("Please respond with 'yes' or 'no' (or 'y'/'n').\n")
+
+
+def _parse_bool(value) -> Optional[bool]:
+    """Coerce a CLI flag value into a bool. ``None`` (flag absent) stays ``None``."""
+    if value is None or isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "y")
 
 
 def select_base_image(manager: DeploymentManager, config_data: dict) -> str:
@@ -64,7 +72,7 @@ def get_or_create_config(manager: DeploymentManager, target_file: Optional[str] 
         else:
             print("Scanning project...")
             return manager.scan()
-    
+
     if manager.config_exists:
         if not input_yes_no(f"Found {manager.config_path.name} in {manager.config_path.parent}/. Overwrite?"):
             return manager.load_config()
@@ -99,39 +107,31 @@ def run_build(args):
     target_file = None
     if args.build is not None and args.build is not True:
         target_file = args.build
-        
+
         target_path = Path(target_file)
         if not target_path.exists():
             print(f"Error: Target file '{target_file}' does not exist.")
             return
-        
+
         if not target_path.is_file():
             print(f"Error: '{target_file}' is not a file.")
             return
-        
+
         if not target_path.suffix == '.py':
             print(f"Warning: '{target_file}' is not a Python file (.py)")
             if not input_yes_no("Continue anyway?", default=False):
                 return
-        
+
         print(f"Using target file: {target_file}")
 
     if manager.dockerfile_exists and not input_yes_no("Deployment config DOCKERFILE exists. Overwrite your deployment config?"):
         print("Aborting build configuration.")
         return
 
-    should_create_dockerfile = True
-
     config_data = get_or_create_config(manager, target_file)
     if not config_data:
         print("Error: Failed to obtain configuration.")
         return
-
-    config_data["orchestrator"] = args.orchestrator
-    config_data["compute"] = args.compute
-    config_data["provider"] = args.provider
-    if args.region:
-        config_data["region"] = args.region
 
     service_title = config_data.get("title", "apipod-service")
 
@@ -146,106 +146,156 @@ def run_build(args):
             print("Please configure dependencies and try again.")
             return
 
-    if should_create_dockerfile:
-        print("Generating Dockerfile...")
-        dockerfile_content = manager.render_dockerfile(final_image, config_data)
-        manager.write_dockerfile(dockerfile_content)
+    print("Generating Dockerfile...")
+    dockerfile_content = manager.render_dockerfile(final_image, config_data)
+    manager.write_dockerfile(dockerfile_content)
 
     if input_yes_no(f"Build the application now using docker? (Tag: {service_title})"):
         manager.build_docker_image(service_title)
 
 
-def run_start(args):
-    """Start an APIPod service with the given configuration."""
-    from apipod import APIPod
+def _resolve_entrypoint(manager: DeploymentManager, entrypoint: Optional[str]) -> str:
+    """Return the service entrypoint file, scanning the project when not provided."""
+    if entrypoint:
+        return entrypoint
 
-    app = APIPod(
-        orchestrator=args.orchestrator,
-        compute=args.compute,
-        provider=args.provider,
-    )
+    config = manager.load_config() if manager.config_exists else None
+    if not config:
+        print("No apipod.json found. Scanning project to locate the entrypoint...")
+        config = manager.scan()
+        manager.save_config(config)
+    return config.get("entrypoint", "main.py")
+
+
+def _load_app(entrypoint: str):
+    """Import the entrypoint module and return its APIPod application instance."""
+    from apipod.engine.base_backend import _BaseBackend
+
+    path = Path(entrypoint).resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Entrypoint '{entrypoint}' not found.")
+
+    spec = importlib.util.spec_from_file_location("apipod_entrypoint", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    app = getattr(module, "app", None)
+    if isinstance(app, _BaseBackend):
+        return app
+    for value in vars(module).values():  # fall back to the first app in the module
+        if isinstance(value, _BaseBackend):
+            return value
+    raise RuntimeError(f"No APIPod app found in '{entrypoint}'. Expected an APIPod() instance.")
+
+
+def _run_service(args, simulate: Optional[str], direct: Optional[bool]):
+    """Resolve the entrypoint, apply the run intent via env vars, and start the app."""
+    # The user's service calls APIPod() with no args; it reads the intent from env.
+    # Set the env BEFORE importing the entrypoint (which imports apipod settings).
+    if simulate is not None:
+        os.environ["APIPOD_SIMULATE"] = simulate
+    if direct is not None:
+        os.environ["APIPOD_DIRECT"] = "true" if direct else "false"
+
+    manager = DeploymentManager()
+    entrypoint = _resolve_entrypoint(manager, args.entrypoint)
+    app = _load_app(entrypoint)
 
     port = args.port or 8000
     host = args.host or "0.0.0.0"
 
-    print(f"Starting APIPod (orchestrator={args.orchestrator}, compute={args.compute}, provider={args.provider})")
+    mode = "development" if simulate is None else f"simulation '{simulate}'{' --direct' if direct else ''}"
+    print(f"Starting APIPod ({mode}) from {entrypoint}")
     app.start(port=port, host=host)
+
+
+def run_start(args):
+    """Run the service locally for development (plain FastAPI)."""
+    _run_service(args, simulate=None, direct=None)
+
+
+def run_simulate(args):
+    """Run the service locally while emulating a deployment target."""
+    target = args.simulate or "serverless"  # bare --simulate defaults to serverless
+    _run_service(args, simulate=target, direct=_parse_bool(args.direct))
+
+
+def run_deploy(args):
+    """Placeholder for the upcoming managed deployment command."""
+    target = args.deploy or "serverless"
+    print(
+        f"`apipod --deploy {target}` is not available yet.\n"
+        "Deploy through the Socaity dashboard for now: https://www.socaity.ai\n"
+        "Tip: validate the target locally first with `apipod --simulate "
+        f"{target}`."
+    )
 
 
 def main():
     """Main entry point for the APIPod CLI."""
-    orchestrator_choices = [e.value for e in ORCHESTRATOR]
-    compute_choices = [e.value for e in COMPUTE]
-    provider_choices = [e.value for e in PROVIDER]
-
     parser = argparse.ArgumentParser(
-        description="APIPod CLI - Build and deploy AI service containers",
+        description="APIPod CLI - build, simulate and deploy AI services",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  apipod --start                               Run locally for development (FastAPI)
+  apipod --simulate                            Emulate a serverless deployment (FastAPI + job queue)
+  apipod --simulate serverless-runpod          Emulate Socaity managed deploy to RunPod
+  apipod --simulate serverless-runpod --direct Emulate RunPod's native worker directly
+  apipod --simulate dedicated-azure            Emulate a dedicated Azure deployment
   apipod --scan                                Scan project and generate apipod.json
-  apipod --build                               Build container using current directory
-  apipod --build ./main.py                     Build container with specific entry file
-  apipod --build --provider runpod             Build for RunPod deployment
-  apipod --start                               Start service locally
-  apipod --start --compute serverless          Start in serverless emulation mode
-  apipod --start --orchestrator socaity        Start with Socaity orchestrator
+  apipod --build                               Build the deployment container
+  apipod --deploy                              Deploy via Socaity (coming soon)
         """
     )
 
     parser.add_argument(
-        "--build", 
-        nargs="?", 
-        const=True, 
-        metavar="FILE",
-        help="Build the service container. Optionally specify a target Python file (e.g., --build main.py)"
-    )
-    parser.add_argument(
-        "--scan", 
-        action="store_true", 
-        help="Scan project and generate apipod.json configuration file"
-    )
-    parser.add_argument(
         "--start",
         action="store_true",
-        help="Start the APIPod service locally"
+        help="Run the service locally for development (plain FastAPI)."
     )
-
-    config_group = parser.add_argument_group("deployment configuration")
-    config_group.add_argument(
-        "--orchestrator",
-        choices=orchestrator_choices,
-        default="local",
-        help=f"Orchestration platform (default: local). Options: {', '.join(orchestrator_choices)}"
+    parser.add_argument(
+        "--simulate",
+        nargs="?",
+        const="",
+        metavar="TARGET",
+        help="Emulate a deployment locally. Optional target '{compute}-{provider}' "
+             "(e.g. serverless-runpod, dedicated-azure). Defaults to 'serverless'."
     )
-    config_group.add_argument(
-        "--compute",
-        choices=compute_choices,
-        default="dedicated",
-        help=f"Compute type (default: dedicated). Options: {', '.join(compute_choices)}"
-    )
-    config_group.add_argument(
-        "--provider",
-        choices=provider_choices,
-        default="localhost",
-        help=f"Infrastructure provider (default: localhost). Options: {', '.join(provider_choices)}"
-    )
-    config_group.add_argument(
-        "--region",
+    parser.add_argument(
+        "--direct",
+        nargs="?",
+        const=True,
         default=None,
-        help="Deployment region (provider-specific, e.g. 'us-east-1')"
+        metavar="BOOL",
+        help="Emulate the provider's native serverless worker instead of Socaity's job queue."
     )
-    config_group.add_argument(
-        "--host",
+    parser.add_argument(
+        "--deploy",
+        nargs="?",
+        const="",
+        metavar="TARGET",
+        help="Deploy the service via Socaity (coming soon)."
+    )
+    parser.add_argument(
+        "--scan",
+        action="store_true",
+        help="Scan project and generate apipod.json configuration file."
+    )
+    parser.add_argument(
+        "--build",
+        nargs="?",
+        const=True,
+        metavar="FILE",
+        help="Build the service container. Optionally specify a target Python file."
+    )
+    parser.add_argument(
+        "--entrypoint",
         default=None,
-        help="Host to bind to (default: 0.0.0.0)"
+        help="Service entrypoint file for --start / --simulate (auto-detected if omitted)."
     )
-    config_group.add_argument(
-        "--port",
-        type=int,
-        default=None,
-        help="Port to bind to (default: 8000)"
-    )
+    parser.add_argument("--host", default=None, help="Host to bind to (default: 0.0.0.0).")
+    parser.add_argument("--port", type=int, default=None, help="Port to bind to (default: 8000).")
 
     args = parser.parse_args()
 
@@ -253,6 +303,10 @@ Examples:
         run_scan()
     elif args.build is not None:
         run_build(args)
+    elif args.deploy is not None:
+        run_deploy(args)
+    elif args.simulate is not None:
+        run_simulate(args)
     elif args.start:
         run_start(args)
     else:
