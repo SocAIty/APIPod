@@ -39,7 +39,6 @@ When your changes create orphans:
 The test: Every changed line should trace directly to the user's request.
  
 ## 4. Code quality and style
-- Code like a brilliant senior full-stack software engineer with deep-expertise in python.
 - Write high-quality, developer-friendly and clean-code, use design-patterns (Refactoring Guru) where helpful. 
 - Include docstrings and comments to explain the why of a non-obvious method or code. No decorative comments.
 - Write memory and compute efficient code.
@@ -49,7 +48,13 @@ The test: Every changed line should trace directly to the user's request.
 - Avoid local imports
 - Do not write "deprecated" or backward compability code.
 - Update the README.md if there's user related important changes. Update TECHNICAL_README.md for architectural, or project maintainer important changes. Keep the .md update brief use technical correct terms.
- 
+- Write flake8 formatted code with "flake8.args": [
+        "--max-line-length=120",
+        "--ignore=E203,W503,E501,E261,W293"
+    ]
+} 
+- Avoid using direct cmd python calls and pip installs. Work with the local venv if necessary. Always ask if necessary.
+
 ## 5. Reason and thinking style
 Do thinking and reasoning like a smart caveman.
 - Cut all filler, keep technical substance.
@@ -78,6 +83,5 @@ Do thinking and reasoning like a smart caveman.
 | **Silicon Blue**       | `#0A86BF` | SMB CTO. Enterprise stability, secure infrastructure, professional trust. |
 | **Creator Violet**     | `#7C3AED` | Creator. Generative potential, creative momentum, warmth.                 |
 | **Signal Pink (Rose)** | `#EC4899` | Alert. Warnings, critical status, high-priority attention.                |
-
-# About Socaity
+ 
 

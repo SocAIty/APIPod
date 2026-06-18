@@ -144,4 +144,28 @@ The **stream store** is the pluggable backend that buffers a job's chunks betwee
 
 A client calls `POST /tts` with a JSON body. FastAPI validates it against the rewritten signature and calls the outermost wrapper. The file-handling layer converts any media inputs into media-toolkit objects. If the endpoint is queued, the queue mixin stores the job and returns `{job_id, status: "queued", links}` — the worker thread later executes the real function, feeding `JobProgress` updates into the store. The client (typically fastSDK) polls `/status/{job_id}` until `finished` and receives the result, with any returned `AudioFile` serialized as a `FileModel`. Without a queue the same conversion happens inline and the response returns directly. On RunPod, the identical user function is reached through `handler → _router(path) → file handling → execute`, proving the core principle: the function is written once, the backend decides how it runs.
 
+## Testing and CI
+
+The suite (`test/`) is built so endpoint definitions live apart from test logic, and one helper boots them under any run intent.
+
+```
+test/
+├── conftest.py          # build_service (in-process TestClient), live_service (real subprocess via CLI), config matrix, file paths
+├── services/            # reusable services: register(app) callbacks + a runnable entrypoint
+│   ├── core_service.py    # scalars, custom model, mixed media, JobProgress, file upload
+│   ├── schema_service.py  # one endpoint per standardized schema, an extended schema, raw/typed mapping CASES
+│   └── exec_service.py    # runnable service for fastSDK + streaming (predict, echo_image, chat, text, video)
+├── files/               # media assets for upload/download tests
+├── test_config.py       # intent -> backend resolution + /openapi.json loads for every backend
+├── test_core.py         # core endpoint plumbing (types, model, files, queue lifecycle)
+├── test_schemas.py      # standardized schema endpoints + response-model normalization
+├── test_cli.py          # scan / build / simulate produce the right artifacts
+└── test_execution.py    # fastSDK end-to-end (subprocess) + SSE streaming (in-process)
+```
+
+Run `pytest`. Two primitives keep tests DRY: `build_service(register, **config)` yields a `TestClient` for an app built from a `register(app)` callback under any `APIPod(**config)` intent; `live_service(simulate=...)` boots a service as a real subprocess through `apipod --start` / `--simulate` and yields its URL. Backends are parametrized from `FASTAPI_CONFIGS`, so a single test asserts behaviour across development, serverless, dedicated and runpod.
+
+The fastSDK end-to-end tests skip automatically when the installed fastsdk lacks the `connect` API (e.g. a local in-progress build); CI installs one that has it. Pytest config (`pythonpath` in `pyproject.toml`) resolves `import apipod` to the in-repo source and the `conftest`/`services` helpers by name, so no `sys.path` shims are needed and each file is also runnable directly from an IDE via its `__main__` block.
+
+CI (`.github/workflows/publish.yml`) runs the `test` job on every push and pull request (installing `.[test]`, which includes fastSDK). The `publish` job `needs: test`, so the patch version bump and PyPI upload happen only on a push to `main` after tests pass. flake8 and mypy run as soft checks (`continue-on-error`): they surface warnings without gating the build.
 

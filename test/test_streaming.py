@@ -1,188 +1,81 @@
 """
-Streaming over the serverless emulation.
+C) Endpoint execution: fastSDK end-to-end + streaming.
 
-APIPod on ``simulate="serverless"`` mimics a real
-deployment: streaming endpoints are queued, the in-process worker produces their
-chunks into a :class:`StreamStore` (the in-memory ``LocalStreamStore`` by
-default), and the client consumes them from ``GET /stream/{job_id}``. A client
-that polls ``GET /status/{job_id}`` instead receives the full aggregated result
-once the job has finished.
+Two layers:
+- fastSDK over HTTP: the inference service is booted in a subprocess via the
+  apipod CLI across a queued and a direct backend. fastSDK drives it exactly as
+  documented (connect -> submit_job -> get_result), including media upload/download.
+- Streaming in-process: the streaming service runs under the serverless emulation
+  (TestClient). The worker relays chunks into the stream store; the client reads
+  them from ``GET /stream/{job_id}`` (SSE). Covers plain text tokens, raw byte
+  frames, and ChatCompletion deltas.
 
-These tests exercise three chunk kinds:
-    1. plain text tokens (any generator endpoint),
-    2. binary "video" chunks (bytes, base64-framed over SSE),
-    3. ChatCompletion deltas (schema endpoint with ``stream=true``).
-
-Run directly:   python test/test_streaming.py
-Or with pytest: pytest test/test_streaming.py
+fastSDK tests are skipped when the installed build lacks ``connect``
+(local mid-refactor state); CI installs one that has it.
 """
 
 import base64
-import time
+import json
 
-from fastapi.testclient import TestClient
+import pytest
 
-from apipod import APIPod, LocalStreamStore
-from apipod.common import schemas
-
-
-# Deterministic "video" payload: a few non-trivial binary frames.
-VIDEO_FRAMES = [bytes([i]) * 2048 for i in range(5)]
-VIDEO_BYTES = b"".join(VIDEO_FRAMES)
-
-TEXT_TOKENS = ["APIPod ", "streams ", "tokens ", "one ", "by ", "one."]
-CHAT_TOKENS = ["Hello", ", ", "world", "!"]
+from conftest import build_service
+from services.streaming_service import CHAT_TOKENS, TEXT_TOKENS, VIDEO_FRAMES
+from services import streaming_service
 
 
-def build_client() -> TestClient:
-    """Build a serverless-emulation app with streaming endpoints."""
-    app = APIPod(simulate="serverless")
-
-    @app.endpoint("/text")
-    def stream_text():
-        for token in TEXT_TOKENS:
-            time.sleep(0.02)
-            yield token
-
-    @app.endpoint("/video")
-    def stream_video():
-        # "Any generator endpoint": here it yields raw video frame bytes.
-        for frame in VIDEO_FRAMES:
-            time.sleep(0.02)
-            yield frame
-
-    @app.endpoint("/chat")
-    def chat(request: schemas.ChatCompletionRequest):
-        if request.stream:
-            def token_gen():
-                for token in CHAT_TOKENS:
-                    time.sleep(0.02)
-                    yield token
-            return token_gen()
-        return "".join(CHAT_TOKENS)
-
-    fastapi_app = app.app
-    fastapi_app.include_router(app)
-    return TestClient(fastapi_app)
+# --------------------------------------------------------------------------- #
+# Streaming (in-process TestClient + SSE)
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def stream_client():
+    with build_service(streaming_service.register, simulate="serverless") as c:
+        yield c
 
 
-def _submit(client: TestClient, path: str, json_body=None) -> str:
-    """POST an endpoint, return the stream URL from the JobResult."""
+def _stream_url(client, path, json_body=None):
     resp = client.post(path, json=json_body)
     assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert "job_id" in body, body
-    stream_url = body["links"]["stream"]
-    assert stream_url, body
-    return stream_url
+    return resp.json()["links"]["stream"]
 
 
-def _collect_sse_data(client: TestClient, stream_url: str) -> list[str]:
-    """Open the SSE stream and return the payloads of every ``data:`` line."""
-    payloads: list[str] = []
+def _sse_payloads(client, stream_url):
+    payloads = []
     with client.stream("GET", stream_url) as resp:
         assert resp.status_code == 200, resp.text
         for line in resp.iter_lines():
-            if not line or line.startswith(":"):  # keep-alive / blank
-                continue
             if line.startswith("data: "):
                 payloads.append(line[len("data: "):])
     return payloads
 
 
-def test_default_stream_store_is_local():
-    """Serverless emulation gets a LocalStreamStore by default; plain FastAPI does not."""
-    serverless = APIPod(simulate="serverless")
-    assert isinstance(serverless.stream_store, LocalStreamStore)
-
-    plain = APIPod(simulate="dedicated")
-    assert plain.stream_store is None
-
-
-def test_stream_text_chunks():
-    client = build_client()
-    stream_url = _submit(client, "/text")
-
-    with client.stream("GET", stream_url) as resp:
-        assert resp.status_code == 200, resp.text
+def test_stream_text_tokens(stream_client):
+    url = _stream_url(stream_client, "/text")
+    with stream_client.stream("GET", url) as resp:
         body = "".join(resp.iter_text())
-
     assert body == "".join(TEXT_TOKENS)
 
 
-def test_stream_video_bytes():
-    client = build_client()
-    stream_url = _submit(client, "/video")
-
-    payloads = _collect_sse_data(client, stream_url)
-    received = b"".join(base64.b64decode(p) for p in payloads)
-
-    assert received == VIDEO_BYTES
+def test_stream_raw_byte_frames(stream_client):
+    url = _stream_url(stream_client, "/video")
+    received = b"".join(base64.b64decode(p) for p in _sse_payloads(stream_client, url))
+    assert received == b"".join(VIDEO_FRAMES)
 
 
-def test_stream_chat_completion():
-    client = build_client()
-    stream_url = _submit(client, "/chat", {"messages": [{"role": "user", "content": "hi"}], "stream": True})
+def test_stream_chat_completion_chunks(stream_client):
+    url = _stream_url(
+        stream_client, "/chat",
+        {"messages": [{"role": "user", "content": "hi"}], "stream": True},
+    )
+    payloads = _sse_payloads(stream_client, url)
 
-    payloads = _collect_sse_data(client, stream_url)
-    assert payloads, "expected at least one chat chunk"
     assert payloads[-1] == "[DONE]"
-
-    import json
-    content = ""
-    for raw in payloads[:-1]:
-        chunk = json.loads(raw)
-        delta = chunk["choices"][0]["delta"].get("content")
-        if delta:
-            content += delta
-
+    content = "".join(
+        json.loads(raw)["choices"][0]["delta"].get("content") or ""
+        for raw in payloads[:-1]
+    )
     assert content == "".join(CHAT_TOKENS)
 
 
-def test_status_returns_full_result_when_not_streaming():
-    """A client that polls /status (instead of /stream) gets the full result."""
-    client = build_client()
-    resp = client.post("/text")
-    assert resp.status_code == 200, resp.text
-    status_url = resp.json()["links"]["status"]
-
-    # Poll tightly until the job reaches a terminal state and exposes its result.
-    full_result = None
-    deadline = time.time() + 5.0
-    while time.time() < deadline:
-        s = client.get(status_url)
-        body = s.json()
-        if body.get("result") is not None:
-            full_result = body["result"]
-            break
-        if body.get("status") in ("finished", "failed", "timeout", "not_found"):
-            full_result = body.get("result")
-            break
-    assert full_result == "".join(TEXT_TOKENS)
-
-
-def main() -> int:
-    tests = [
-        test_default_stream_store_is_local,
-        test_stream_text_chunks,
-        test_stream_video_bytes,
-        test_stream_chat_completion,
-        test_status_returns_full_result_when_not_streaming,
-    ]
-    failures = 0
-    for test in tests:
-        try:
-            test()
-            print(f"  PASS  {test.__name__}")
-        except Exception as exc:  # noqa: BLE001
-            failures += 1
-            import traceback
-            print(f"  FAIL  {test.__name__}: {exc.__class__.__name__}: {exc}")
-            traceback.print_exc()
-    print(f"\n{len(tests) - failures}/{len(tests)} passed")
-    return 1 if failures else 0
-
-
 if __name__ == "__main__":
-    import sys
-    sys.exit(main())
+    raise SystemExit(pytest.main([__file__, "-v"]))

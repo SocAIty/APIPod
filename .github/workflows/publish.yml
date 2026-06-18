@@ -1,11 +1,41 @@
-name: Publish to PyPI
+name: CI & Publish
 
 on:
   push:
     branches: [main]
+  pull_request:
 
 jobs:
+  # Tests gate everything: no version bump, no publish unless these pass.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package + test deps (incl. fastSDK)
+        run: pip install -e ".[test]"
+
+      - name: Run tests
+        run: pytest -q
+
+      # Soft checks: report only, never fail the build.
+      - name: ruff (soft)
+        continue-on-error: true
+        run: ruff check apipod test
+
+      - name: mypy (soft)
+        continue-on-error: true
+        run: mypy apipod
+
+  # Runs only on push to main, and only after tests pass.
   publish:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,7 +48,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install build tooling
         run: pip install build twine
 
       - name: Bump patch version
