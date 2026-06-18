@@ -28,8 +28,37 @@ apipod = "apipod.cli:main"
 runpod = [
     "runpod>=1.7.7"
 ]
+test = [
+    "pytest",
+    "httpx",
+    "ruff",
+    "mypy",
+]
 
 
 [project.urls]
 Repository = "https://github.com/SocAIty/apipod"
 Homepage = "https://www.socaity.ai"
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+# Make `import apipod` resolve to the in-repo source (not an installed copy) and
+# let test modules import the shared `conftest` helpers and `services` package by
+# name. The sibling fastsdk entry is used in local dev when the repo is checked
+# out next to apipod; it is silently ignored in CI where fastsdk comes from pip.
+pythonpath = [".", "test", "../fastsdk"]
+
+[tool.ruff]
+line-length = 120
+exclude = ["venv", "dist", "build", "*.egg-info"]
+
+[tool.ruff.lint]
+# Mirror the previous flake8 config: ignore stylistic rules that conflict with
+# black/our formatting conventions.
+ignore = ["E203", "E261", "E501", "W293"]
+
+[tool.mypy]
+# Soft static typing: a warning signal, never a build gate (see CI).
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_unused_ignores = false

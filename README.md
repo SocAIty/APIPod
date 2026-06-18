@@ -60,7 +60,7 @@ def hello(name: str):
     return f"Hello {name}!"
 
 # Built-in media processing — uploads/URLs/base64 are parsed for you
-@app.endpoint("/process_image")
+@app.endpoint("/process-image")
 def process_image(image: ImageFile):
     img_array = image.to_np_array()
     # ... run your AI model here ...

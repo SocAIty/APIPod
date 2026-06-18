@@ -346,6 +346,16 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             if binding is not None:
                 result = wrap_schema_response(result, binding)
             return JobResultFactory._serialize_result(result)
+
+        # Python 3.12+ follows __wrapped__ when evaluating inspect.isgeneratorfunction().
+        # sync_wrapper is never a generator (it returns a JobResult or StreamProducer).
+        # Without this, FastAPI would mistake a task endpoint wrapping a generator for a
+        # streaming route and serve the JobResult as iterated key-value NDJSON chunks.
+        if hasattr(sync_wrapper, "__wrapped__"):
+            # Pin the signature explicitly so FastAPI can parse parameters
+            sync_wrapper.__signature__ = inspect.signature(func)
+            del sync_wrapper.__wrapped__
+
         return sync_wrapper
 
     def _create_task_endpoint_decorator(self, plan: EndpointExecutionPlan):
