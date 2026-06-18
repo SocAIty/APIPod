@@ -56,13 +56,12 @@ def test_single_file_upload(
 ):
     return file1.to_base64()
 
+@app.endpoint("/normal_endpoint")
+def normal_endpoint():
+    return "normal_endpoint"
 
-@app.endpoint("/make_fries", methods="POST")
-def test(
-    mymom: str,
-    file1: fastapiUploadFile
-):
-    return "nok"
+
+
 
 
 if __name__ == "__main__":
