@@ -22,7 +22,7 @@ jobs:
         run: pip install -e ".[test]"
 
       - name: Run tests
-        run: pytest -q
+        run: pytest -v
 
       # Soft checks: report only, never fail the build.
       - name: ruff (soft)
