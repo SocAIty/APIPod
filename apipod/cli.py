@@ -22,13 +22,6 @@ def input_yes_no(question: str, default: bool = True) -> bool:
         sys.stdout.write("Please respond with 'yes' or 'no' (or 'y'/'n').\n")
 
 
-def _parse_bool(value) -> Optional[bool]:
-    """Coerce a CLI flag value into a bool. ``None`` (flag absent) stays ``None``."""
-    if value is None or isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in ("1", "true", "yes", "y")
-
-
 def select_base_image(manager: DeploymentManager, config_data: dict) -> str:
     """Interactive base image selection process."""
     recommended_image = manager.recommend_image(config_data)
@@ -88,7 +81,7 @@ def get_or_create_config(manager: DeploymentManager, target_file: Optional[str] 
     return config_data
 
 
-def run_scan():
+def run_scan(_args=None):
     """Scan the project and generate apipod.json configuration file."""
     manager = DeploymentManager()
 
@@ -104,10 +97,8 @@ def run_build(args):
     """Run the build process for creating a deployment-ready container."""
     manager = DeploymentManager()
 
-    target_file = None
-    if args.build is not None and args.build is not True:
-        target_file = args.build
-
+    target_file = args.file
+    if target_file:
         target_path = Path(target_file)
         if not target_path.exists():
             print(f"Error: Target file '{target_file}' does not exist.")
@@ -154,6 +145,25 @@ def run_build(args):
         manager.build_docker_image(service_title)
 
 
+def _looks_like_entrypoint(value: str) -> bool:
+    """Return True when a simulate positional arg is likely a Python entrypoint file."""
+    return value.endswith(".py") or Path(value).is_file()
+
+
+def _resolve_simulate_args(args) -> tuple[str, Optional[str]]:
+    """Split simulate positionals into deployment target and optional entrypoint."""
+    if args.entrypoint is not None:
+        return args.target, args.entrypoint
+
+    if args.target is None:
+        return "serverless", None
+
+    if _looks_like_entrypoint(args.target):
+        return "serverless", args.target
+
+    return args.target, None
+
+
 def _resolve_entrypoint(manager: DeploymentManager, entrypoint: Optional[str]) -> str:
     """Return the service entrypoint file, scanning the project when not provided."""
     if entrypoint:
@@ -188,14 +198,14 @@ def _load_app(entrypoint: str):
     raise RuntimeError(f"No APIPod app found in '{entrypoint}'. Expected an APIPod() instance.")
 
 
-def _run_service(args, simulate: Optional[str], direct: Optional[bool]):
+def _run_service(args, simulate: Optional[str], native: bool = False):
     """Resolve the entrypoint, apply the run intent via env vars, and start the app."""
     # The user's service calls APIPod() with no args; it reads the intent from env.
     # Set the env BEFORE importing the entrypoint (which imports apipod settings).
     if simulate is not None:
         os.environ["APIPOD_SIMULATE"] = simulate
-    if direct is not None:
-        os.environ["APIPOD_DIRECT"] = "true" if direct else "false"
+    if native:
+        os.environ["APIPOD_NATIVE"] = "true"
 
     manager = DeploymentManager()
     entrypoint = _resolve_entrypoint(manager, args.entrypoint)
@@ -204,113 +214,202 @@ def _run_service(args, simulate: Optional[str], direct: Optional[bool]):
     port = args.port or 8000
     host = args.host or "0.0.0.0"
 
-    mode = "development" if simulate is None else f"simulation '{simulate}'{' --direct' if direct else ''}"
+    if simulate is None:
+        mode = "development"
+    else:
+        mode = f"simulation '{simulate}'{' --native' if native else ''}"
     print(f"Starting APIPod ({mode}) from {entrypoint}")
     app.start(port=port, host=host)
 
 
 def run_start(args):
     """Run the service locally for development (plain FastAPI)."""
-    _run_service(args, simulate=None, direct=None)
+    _run_service(args, simulate=None)
 
 
 def run_simulate(args):
     """Run the service locally while emulating a deployment target."""
-    target = args.simulate or "serverless"  # bare --simulate defaults to serverless
-    _run_service(args, simulate=target, direct=_parse_bool(args.direct))
+    target, entrypoint = _resolve_simulate_args(args)
+    args.entrypoint = entrypoint
+    _run_service(args, simulate=target, native=args.native)
 
 
 def run_deploy(args):
     """Placeholder for the upcoming managed deployment command."""
-    target = args.deploy or "serverless"
+    target = args.target or "serverless"
     print(
-        f"`apipod --deploy {target}` is not available yet.\n"
+        f"`apipod deploy {target}` is not available yet.\n"
         "Deploy through the Socaity dashboard for now: https://www.socaity.ai\n"
-        "Tip: validate the target locally first with `apipod --simulate "
-        f"{target}`."
+        f"Tip: validate the target locally first with `apipod simulate {target}`."
     )
 
 
-def main():
-    """Main entry point for the APIPod CLI."""
+def run_help(args, parsers: dict):
+    """Print top-level or command-specific help."""
+    if args.command:
+        parser = parsers.get(args.command)
+        if parser is None:
+            print(f"Unknown command: {args.command}\n")
+            parsers["__root__"].print_help()
+            sys.exit(1)
+        parser.print_help()
+    else:
+        parsers["__root__"].print_help()
+
+
+def _add_run_options(parser: argparse.ArgumentParser) -> None:
+    """Shared host/port and entrypoint options for start and simulate."""
+    parser.add_argument(
+        "entrypoint",
+        nargs="?",
+        default=None,
+        metavar="ENTRYPOINT",
+        help="Service entrypoint file (auto-detected from apipod.json when omitted).",
+    )
+    parser.add_argument("--host", default=None, help="Host to bind to (default: 0.0.0.0).")
+    parser.add_argument("--port", type=int, default=None, help="Port to bind to (default: 8000).")
+
+
+def _build_parser() -> tuple[argparse.ArgumentParser, dict]:
+    """Construct the CLI parser tree and return the root parser plus a lookup map."""
     parser = argparse.ArgumentParser(
         description="APIPod CLI - build, simulate and deploy AI services",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  apipod --start                               Run locally for development (FastAPI)
-  apipod --simulate                            Emulate a serverless deployment (FastAPI + job queue)
-  apipod --simulate serverless-runpod          Emulate Socaity managed deploy to RunPod
-  apipod --simulate serverless-runpod --direct Emulate RunPod's native worker directly
-  apipod --simulate dedicated-azure            Emulate a dedicated Azure deployment
-  apipod --scan                                Scan project and generate apipod.json
-  apipod --build                               Build the deployment container
-  apipod --deploy                              Deploy via Socaity (coming soon)
-        """
+  apipod help                                    Show this overview
+  apipod start                                   Run locally for development (FastAPI)
+  apipod start main.py                           Run a specific entrypoint
+  apipod simulate                                Emulate a serverless deployment (FastAPI + job queue)
+  apipod simulate serverless-runpod              Emulate Socaity managed deploy to RunPod
+  apipod simulate serverless-runpod --native     Emulate RunPod's native worker directly
+  apipod simulate dedicated-azure                Emulate a dedicated Azure deployment
+  apipod scan                                    Scan project and generate apipod.json
+  apipod build                                   Build the deployment container
+  apipod build path/to/service.py                Build from a specific Python file
+  apipod deploy                                  Deploy via Socaity (coming soon)
+        """,
     )
+    subparsers = parser.add_subparsers(dest="command", metavar="command")
+    parsers: dict = {"__root__": parser}
 
-    parser.add_argument(
-        "--start",
-        action="store_true",
-        help="Run the service locally for development (plain FastAPI)."
+    start_parser = subparsers.add_parser(
+        "start",
+        help="Run the service locally for development (plain FastAPI).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  apipod start\n  apipod start main.py --port 8123",
     )
-    parser.add_argument(
-        "--simulate",
-        nargs="?",
-        const="",
-        metavar="TARGET",
-        help="Emulate a deployment locally. Optional target '{compute}-{provider}' "
-             "(e.g. serverless-runpod, dedicated-azure). Defaults to 'serverless'."
+    _add_run_options(start_parser)
+    parsers["start"] = start_parser
+
+    simulate_parser = subparsers.add_parser(
+        "simulate",
+        help="Emulate a deployment target locally.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  apipod simulate\n"
+            "  apipod simulate serverless-runpod\n"
+            "  apipod simulate serverless-runpod main.py --native"
+        ),
     )
-    parser.add_argument(
-        "--direct",
+    simulate_parser.add_argument(
+        "target",
         nargs="?",
-        const=True,
         default=None,
-        metavar="BOOL",
-        help="Emulate the provider's native serverless worker instead of Socaity's job queue."
-    )
-    parser.add_argument(
-        "--deploy",
-        nargs="?",
-        const="",
         metavar="TARGET",
-        help="Deploy the service via Socaity (coming soon)."
+        help="Deployment target '{compute}-{provider}' (e.g. serverless-runpod, dedicated-azure). "
+             "Defaults to 'serverless'. A .py value is treated as the entrypoint.",
     )
-    parser.add_argument(
-        "--scan",
-        action="store_true",
-        help="Scan project and generate apipod.json configuration file."
-    )
-    parser.add_argument(
-        "--build",
+    simulate_parser.add_argument(
+        "entrypoint",
         nargs="?",
-        const=True,
+        default=None,
+        metavar="ENTRYPOINT",
+        help="Service entrypoint file (auto-detected when omitted).",
+    )
+    simulate_parser.add_argument(
+        "--native",
+        action="store_true",
+        help="Emulate the provider's native serverless worker instead of Socaity's job queue.",
+    )
+    simulate_parser.add_argument("--host", default=None, help="Host to bind to (default: 0.0.0.0).")
+    simulate_parser.add_argument("--port", type=int, default=None, help="Port to bind to (default: 8000).")
+    parsers["simulate"] = simulate_parser
+
+    scan_parser = subparsers.add_parser(
+        "scan",
+        help="Scan project and generate apipod.json configuration file.",
+    )
+    parsers["scan"] = scan_parser
+
+    build_parser = subparsers.add_parser(
+        "build",
+        help="Build the service container.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  apipod build\n  apipod build path/to/service.py",
+    )
+    build_parser.add_argument(
+        "file",
+        nargs="?",
+        default=None,
         metavar="FILE",
-        help="Build the service container. Optionally specify a target Python file."
+        help="Target Python file to scan (project-wide scan when omitted).",
     )
-    parser.add_argument(
-        "--entrypoint",
-        default=None,
-        help="Service entrypoint file for --start / --simulate (auto-detected if omitted)."
-    )
-    parser.add_argument("--host", default=None, help="Host to bind to (default: 0.0.0.0).")
-    parser.add_argument("--port", type=int, default=None, help="Port to bind to (default: 8000).")
+    parsers["build"] = build_parser
 
+    deploy_parser = subparsers.add_parser(
+        "deploy",
+        help="Deploy the service via Socaity (coming soon).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  apipod deploy\n  apipod deploy serverless-runpod",
+    )
+    deploy_parser.add_argument(
+        "target",
+        nargs="?",
+        default="serverless",
+        metavar="TARGET",
+        help="Deployment target '{compute}-{provider}' (default: serverless).",
+    )
+    parsers["deploy"] = deploy_parser
+
+    help_parser = subparsers.add_parser(
+        "help",
+        help="Show help for apipod or a specific command.",
+    )
+    help_parser.add_argument(
+        "command",
+        nargs="?",
+        default=None,
+        metavar="COMMAND",
+        help="Command to show help for (omit for the overview).",
+    )
+    parsers["help"] = help_parser
+
+    return parser, parsers
+
+
+def main():
+    """Main entry point for the APIPod CLI."""
+    parser, parsers = _build_parser()
     args = parser.parse_args()
 
-    if args.scan:
-        run_scan()
-    elif args.build is not None:
-        run_build(args)
-    elif args.deploy is not None:
-        run_deploy(args)
-    elif args.simulate is not None:
-        run_simulate(args)
-    elif args.start:
-        run_start(args)
-    else:
+    if args.command is None:
         parser.print_help()
+        return
+
+    if args.command == "scan":
+        run_scan(args)
+    elif args.command == "build":
+        run_build(args)
+    elif args.command == "deploy":
+        run_deploy(args)
+    elif args.command == "simulate":
+        run_simulate(args)
+    elif args.command == "start":
+        run_start(args)
+    elif args.command == "help":
+        run_help(args, parsers)
 
 
 if __name__ == "__main__":

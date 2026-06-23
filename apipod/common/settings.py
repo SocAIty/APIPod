@@ -10,7 +10,7 @@ APIPOD_REGION = environ.get("APIPOD_REGION", "")
 # Local simulation intent (ignored in managed deployments). Empty = development.
 # Target string is "{compute}-{provider}", e.g. "serverless-runpod".
 APIPOD_SIMULATE = environ.get("APIPOD_SIMULATE", "")
-APIPOD_DIRECT = environ.get("APIPOD_DIRECT", "").strip().lower() in ("1", "true", "yes")
+APIPOD_NATIVE = environ.get("APIPOD_NATIVE", "").strip().lower() in ("1", "true", "yes")
 
 APIPOD_HOST = environ.get("APIPOD_HOST", "0.0.0.0")
 APIPOD_PORT = int(environ.get("APIPOD_PORT", 8000))

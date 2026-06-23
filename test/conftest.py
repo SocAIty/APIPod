@@ -11,7 +11,7 @@ declarative and DRY:
   registers endpoints and hand back a wired FastAPI ``TestClient`` (in-process,
   no socket). Used by the config / openapi / core / schema tests.
 - ``live_service(simulate=...)`` — boot the example service in a subprocess via
-  the real ``apipod`` CLI (the same ``--start`` / ``--simulate`` a user runs),
+  the real ``apipod`` CLI (the same ``start`` / ``simulate`` a user runs),
   yield its base URL, and shut it down afterwards. Used by the fastSDK
   end-to-end execution tests.
 
@@ -120,13 +120,13 @@ def live_service(simulate: str = "serverless", entrypoint: Path = INFERENCE_SERV
     """
     Boot ``entrypoint`` in a subprocess through the real apipod CLI and yield its URL.
 
-    ``simulate=None`` runs ``apipod --start`` (development); otherwise it runs
-    ``apipod --simulate <target>`` exactly as a user would on the command line.
+    ``simulate=None`` runs ``apipod start`` (development); otherwise it runs
+    ``apipod simulate <target>`` exactly as a user would on the command line.
     """
     port = port or _free_port()
     cmd = [sys.executable, "-m", "apipod.cli"]
-    cmd += ["--start"] if simulate is None else ["--simulate", simulate]
-    cmd += ["--entrypoint", str(entrypoint), "--host", "127.0.0.1", "--port", str(port)]
+    cmd += ["start"] if simulate is None else ["simulate", simulate]
+    cmd += [str(entrypoint), "--host", "127.0.0.1", "--port", str(port)]
 
     proc = subprocess.Popen(cmd, cwd=str(REPO_ROOT))
     url = f"http://127.0.0.1:{port}"

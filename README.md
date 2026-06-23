@@ -36,7 +36,7 @@ Building AI services is complex: file handling, long-running inference, job queu
 3. **Standardized I/O** — painless Images, Audio and Video via [media-toolkit](https://github.com/SocAIty/media-toolkit).
 4. **OpenAI-compatible schemas** — built-in request/response schemas for chat, completions, embeddings, TTS, transcription, image/video generation. OpenAI clients work out of the box.
 5. **Built-in job queue** — async jobs, polling and progress tracking, with no Celery/Redis/Kubernetes to wire up.
-6. **One-command packaging** — `apipod --build` generates your Dockerfile. No CUDA hell; APIPod picks compatible images.
+6. **One-command packaging** — `apipod build` generates your Dockerfile. No CUDA hell; APIPod picks compatible images.
 
 ## Installation
 
@@ -75,7 +75,7 @@ Run it and open `http://localhost:8000/docs` for the auto-generated Swagger UI.
 ```bash
 python main.py
 # or
-apipod --start
+apipod start
 ```
 
 ## Smart File Handling
@@ -135,36 +135,36 @@ Just say *how you want to run the service right now*.
 Plain FastAPI. The fastest iteration loop.
 
 ```bash
-apipod --start
+apipod start
 # or simply
 python main.py
 ```
 
 ### Simulate a deployment
 
-Before you ship, run your service exactly how it will behave in production — locally, with **no code changes**. `--simulate` takes an optional target string `{compute}-{provider}` (compute defaults to `serverless`).
+Before you ship, run your service exactly how it will behave in production — locally, with **no code changes**. `apipod simulate` takes an optional target string `{compute}-{provider}` (compute defaults to `serverless`).
 
 ```bash
-apipod --simulate                    # serverless emulation: FastAPI + local job queue
-apipod --simulate serverless         # same as above
-apipod --simulate dedicated          # plain FastAPI (dedicated compute)
-apipod --simulate serverless-runpod  # emulate Socaity routing requests to RunPod
-apipod --simulate dedicated-azure    # emulate a dedicated Azure deployment
+apipod simulate                    # serverless emulation: FastAPI + local job queue
+apipod simulate serverless         # same as above
+apipod simulate dedicated          # plain FastAPI (dedicated compute)
+apipod simulate serverless-runpod  # emulate Socaity routing requests to RunPod
+apipod simulate dedicated-azure    # emulate a dedicated Azure deployment
 ```
 
 If a provider has no serverless offering, APIPod warns and falls back to the job-queue emulation:
 
 ```bash
-apipod --simulate serverless-azure
+apipod simulate serverless-azure
 # Warning: azure does not support serverless. Defaulting to FastAPI + Local Job Queue.
 ```
 
-### Emulate a provider's native worker (`--direct`)
+### Emulate a provider's native worker (`--native`)
 
-By default Socaity is the orchestrator. `--direct` skips Socaity and runs the provider's **own** serverless backend locally — e.g. RunPod's serverless worker (requires the `runpod` package):
+By default Socaity is the orchestrator. `--native` skips Socaity and runs the provider's **own** serverless backend locally — e.g. RunPod's serverless worker (requires the `runpod` package):
 
 ```bash
-apipod --simulate serverless-runpod --direct
+apipod simulate serverless-runpod --native
 ```
 
 ### Configure from Python
@@ -182,7 +182,7 @@ app = APIPod(simulate="serverless-runpod", direct=True)   # RunPod native worker
 ### Build a container
 
 ```bash
-apipod --build
+apipod build
 ```
 
 This scans your project, picks a compatible base image (CUDA/cuDNN, ffmpeg included) and generates a `Dockerfile`. For most users this is all you need; advanced users can edit or write their own Dockerfile.
@@ -192,12 +192,12 @@ Requirements: Docker installed, plus a CUDA/cuDNN setup if your model needs the 
 ### Deploy
 
 ```bash
-apipod --deploy                 # coming soon
-apipod --deploy serverless
-apipod --deploy dedicated-azure
+apipod deploy                 # coming soon
+apipod deploy serverless
+apipod deploy dedicated-azure
 ```
 
-The managed `--deploy` command is on the roadmap. Today, build your container and deploy it through the [Socaity dashboard](https://www.socaity.ai) — the simplest path, with auth, scaling and routing handled for you.
+The managed `deploy` command is on the roadmap. Today, build your container and deploy it through the [Socaity dashboard](https://www.socaity.ai) — the simplest path, with auth, scaling and routing handled for you.
 
 ## Client SDK
 
@@ -227,7 +227,7 @@ client.text_to_speech("what a time to be alive")
 
 ## Roadmap
 
-- `apipod --deploy` managed deployment command.
+- `apipod deploy` managed deployment command.
 - MCP protocol support.
 
 ---

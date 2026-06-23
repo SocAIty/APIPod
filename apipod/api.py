@@ -3,7 +3,7 @@ from typing import Optional, Tuple, Union
 from apipod.common.constants import COMPUTE, PROVIDER
 from apipod.common.settings import (
     APIPOD_COMPUTE,
-    APIPOD_DIRECT,
+    APIPOD_NATIVE,
     APIPOD_PROVIDER,
     APIPOD_SIMULATE,
     IS_MANAGED_DEPLOYMENT,
@@ -76,7 +76,7 @@ def _resolve_intent(simulate: Optional[str], direct: Optional[bool]) -> _Resolut
     if simulate is None and not APIPOD_SIMULATE:
         return SocaityFastAPIRouter, False, False
 
-    direct = APIPOD_DIRECT if direct is None else bool(direct)
+    direct = APIPOD_NATIVE if direct is None else bool(direct)
     compute, provider = _parse_target(target)
 
     if compute is COMPUTE.DEDICATED:

@@ -5,7 +5,7 @@
                         (used by fastSDK tests), broad media+model endpoint,
                         JobProgress lifecycle, single file upload.
 
-The module-level ``app`` makes this file a valid ``apipod --start`` entrypoint,
+The module-level ``app`` makes this file a valid ``apipod start`` entrypoint,
 so fastSDK end-to-end tests can boot it as a subprocess via ``conftest.live_service``.
 
 APIPod normalizes ``_`` to ``-`` in routes, so e.g. ``/mixed_media`` is served
@@ -93,7 +93,7 @@ def register(app):
         return file1.to_base64()
 
 
-# Runnable entrypoint: booted by ``apipod --start`` / ``--simulate`` in
+# Runnable entrypoint: booted by ``apipod start`` / ``simulate`` in
 # fastSDK end-to-end tests via ``conftest.live_service``.
 app = APIPod()  # run intent injected via env by the CLI
 register(app)

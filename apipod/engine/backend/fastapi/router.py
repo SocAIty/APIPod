@@ -211,7 +211,16 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         if not self.app.openapi_schema:
             self._orig_openapi_func()
 
-        self.app.openapi_schema["info"]["apipod"] = self.version
+        compute = "dedicated"
+        if self.job_queue is not None:
+            compute = "serverless"
+
+        manifest = {
+            "compute": compute,
+            "version": self.version,
+        }
+
+        self.app.openapi_schema["info"]["apipod"] = manifest
         return self.app.openapi_schema
 
     def get_job(self, job_id: str, return_format: str = 'json') -> JobResult:

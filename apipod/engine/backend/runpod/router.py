@@ -248,8 +248,13 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         rp_fastapi.RUN_DESCRIPTION = desc + "\n" + rp_fastapi.RUN_DESCRIPTION
 
         # hack to print version also in runpod
-        version = self.version
-
+        # Add APIPod manifest like in the FastAPI router
+        manifest = {
+            "compute": "serverless",
+            "version": self.version,
+            "simulate": self.simulate,
+        }
+   
         class WorkerAPIWithModifiedInfo(rp_fastapi.WorkerAPI):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
@@ -259,7 +264,7 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
             def custom_openapi(self):
                 if not self.rp_app.openapi_schema:
                     self._orig_openapi_func()
-                self.rp_app.openapi_schema["info"]["apipod"] = version
+                self.rp_app.openapi_schema["info"]["apipod"] = manifest
                 self.rp_app.openapi_schema["info"]["runpod"] = rp_fastapi.runpod_version
                 return self.rp_app.openapi_schema
 
@@ -403,8 +408,13 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
             description=self.summary,
         )
 
-        # Add APIPod version information like the FastAPI router
-        schema["info"]["apipod"] = self.version
+        # Add APIPod manifest like in the FastAPI router
+        manifest = {
+            "compute": "serverless",
+            "version": self.version,
+            "simulate": self.simulate,
+        }
+        schema["info"]["apipod"] = manifest
 
         return schema
 

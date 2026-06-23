@@ -61,7 +61,7 @@ def test_openapi_loads_for_fastapi_backends(config):
         schema = client.get("/openapi.json").json()
         assert schema["openapi"].startswith("3.")
         assert {"/echo", "/add"} <= set(schema["paths"])
-        assert "apipod" in schema["info"]  # APIPod stamps its version in
+        assert "apipod" in schema["info"]  
 
 
 def test_openapi_for_runpod_direct():
@@ -73,6 +73,9 @@ def test_openapi_for_runpod_direct():
     assert schema["openapi"].startswith("3.")
     assert {"/echo", "/add"} <= set(schema["paths"])
     assert "apipod" in schema["info"]
+    assert schema["info"]["apipod"]["compute"] == "serverless"
+    assert schema["info"]["apipod"]["version"]
+    assert schema["info"]["apipod"]["simulate"] is True
 
 
 if __name__ == "__main__":

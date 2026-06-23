@@ -51,14 +51,14 @@ apipod/
 
 Three concepts describe *where and how* a service runs. Historically developers had to set all three; they no longer do. Understanding them still helps when reading the code.
 
-- **Orchestrator** — *who routes and queues requests*. There is exactly one: **Socaity**. It is the implicit orchestrator that fronts the service, distributes jobs, and handles scaling/auth. It is no longer a flag. `--direct` is the one escape hatch: it *skips* Socaity to talk to a provider's native backend instead (e.g. RunPod's own serverless worker).
+- **Orchestrator** — *who routes and queues requests*. There is exactly one: **Socaity**. It is the implicit orchestrator that fronts the service, distributes jobs, and handles scaling/auth. It is no longer a flag. `--native` is the one escape hatch: it *skips* Socaity to talk to a provider's native backend instead (e.g. RunPod's own serverless worker).
 - **Compute** (`COMPUTE`) — *the shape of the machine*: `serverless` (scale-to-zero, job-queue semantics) or `dedicated` (an always-on box, plain request/response).
 - **Provider** (`PROVIDER`) — *the cloud the compute lives on*: `runpod`, `azure`, `scaleway`, `localhost`, … Not every provider supports every compute (e.g. Azure has no serverless; APIPod warns and falls back to the job-queue emulation).
 
 A developer never assembles this matrix by hand. They express a single **intent**:
 
-- **Development** (`APIPod()` / `apipod --start`) — plain FastAPI, the fastest loop.
-- **Simulation** (`APIPod(simulate="{compute}-{provider}")` / `apipod --simulate ...`) — emulate a deployment **locally**, no code changes. The target string collapses compute + provider (`serverless`, `serverless-runpod`, `dedicated-azure`); compute defaults to `serverless`. `direct=True` emulates the provider's native worker instead of the Socaity queue.
+- **Development** (`APIPod()` / `apipod start`) — plain FastAPI, the fastest loop.
+- **Simulation** (`APIPod(simulate="{compute}-{provider}")` / `apipod simulate ...`) — emulate a deployment **locally**, no code changes. The target string collapses compute + provider (`serverless`, `serverless-runpod`, `dedicated-azure`); compute defaults to `serverless`. `direct=True` emulates the provider's native worker instead of the Socaity queue.
 - **Managed deployment** — when the service runs on the platform, Socaity sets `SOCAITY_DEPLOYMENT_CERT` (SHA1 of a shared secret). When that cert verifies (`IS_MANAGED_DEPLOYMENT`), `simulate`/`direct` are ignored and the **real** backend is selected from the `APIPOD_COMPUTE` / `APIPOD_PROVIDER` env vars Socaity injects — so the serverless-RunPod path runs the *real* worker, not the emulator.
 
 ## Backend resolution
@@ -66,7 +66,7 @@ A developer never assembles this matrix by hand. They express a single **intent*
 `APIPod()` in `api.py` is not a class — it is a factory. It resolves the intent (managed → `_resolve_managed`, otherwise → `_resolve_intent`) into a `(backend_class, use_job_queue, runpod_simulate)` triple and returns one of:
 
 - **`SocaityFastAPIRouter`** — an `APIRouter` subclass bound to a `FastAPI` app. Used for development and dedicated compute (no queue), and for the serverless emulation (paired with an in-memory `JobQueue` + `LocalStreamStore` and a background worker thread started via the app lifespan).
-- **`SocaityRunpodRouter`** — a path-based dispatcher for RunPod serverless. There is no HTTP layer: RunPod delivers a JSON job whose `input.path` selects the registered function; the router converts files, injects `JobProgress`, executes, and returns a serialized `JobResult` (or a generator for streaming). It can also synthesize an OpenAPI schema by replaying the FastAPI signature conversion, so fastSDK clients can be generated against serverless deployments too. Its `simulate` flag chooses between RunPod's local API emulator (`apipod --simulate serverless-runpod --direct`) and the real worker (managed deployment).
+- **`SocaityRunpodRouter`** — a path-based dispatcher for RunPod serverless. There is no HTTP layer: RunPod delivers a JSON job whose `input.path` selects the registered function; the router converts files, injects `JobProgress`, executes, and returns a serialized `JobResult` (or a generator for streaming). It can also synthesize an OpenAPI schema by replaying the FastAPI signature conversion, so fastSDK clients can be generated against serverless deployments too. Its `simulate` flag chooses between RunPod's local API emulator (`apipod simulate serverless-runpod --native`) and the real worker (managed deployment).
 
 ## The endpoint pipeline (FastAPI backend)
 
@@ -138,7 +138,7 @@ The **stream store** is the pluggable backend that buffers a job's chunks betwee
 
 ### Deployment
 
-`apipod --build` (see `deploy/`) scans the project (entrypoint, dependencies, CUDA requirements) and generates a Dockerfile from compatible templates. The resulting container runs unchanged on dedicated hosts, on socaity.ai, or on RunPod serverless — only the env vars differ: Socaity injects `SOCAITY_DEPLOYMENT_CERT` plus `APIPOD_COMPUTE` / `APIPOD_PROVIDER` to select the real backend, while locally you drive the same paths with `APIPOD_SIMULATE` / `APIPOD_DIRECT` (set for you by `apipod --simulate`).
+`apipod build` (see `deploy/`) scans the project (entrypoint, dependencies, CUDA requirements) and generates a Dockerfile from compatible templates. The resulting container runs unchanged on dedicated hosts, on socaity.ai, or on RunPod serverless — only the env vars differ: Socaity injects `SOCAITY_DEPLOYMENT_CERT` plus `APIPOD_COMPUTE` / `APIPOD_PROVIDER` to select the real backend, while locally you drive the same paths with `APIPOD_SIMULATE` / `APIPOD_NATIVE` (set for you by `apipod simulate`).
 
 ## Request lifecycle, end to end
 
@@ -163,7 +163,7 @@ test/
 └── test_execution.py    # fastSDK end-to-end (subprocess) + SSE streaming (in-process)
 ```
 
-Run `pytest`. Two primitives keep tests DRY: `build_service(register, **config)` yields a `TestClient` for an app built from a `register(app)` callback under any `APIPod(**config)` intent; `live_service(simulate=...)` boots a service as a real subprocess through `apipod --start` / `--simulate` and yields its URL. Backends are parametrized from `FASTAPI_CONFIGS`, so a single test asserts behaviour across development, serverless, dedicated and runpod.
+Run `pytest`. Two primitives keep tests DRY: `build_service(register, **config)` yields a `TestClient` for an app built from a `register(app)` callback under any `APIPod(**config)` intent; `live_service(simulate=...)` boots a service as a real subprocess through `apipod start` / `simulate` and yields its URL. Backends are parametrized from `FASTAPI_CONFIGS`, so a single test asserts behaviour across development, serverless, dedicated and runpod.
 
 The fastSDK end-to-end tests skip automatically when the installed fastsdk lacks the `connect` API (e.g. a local in-progress build); CI installs one that has it. Pytest config (`pythonpath` in `pyproject.toml`) resolves `import apipod` to the in-repo source and the `conftest`/`services` helpers by name, so no `sys.path` shims are needed and each file is also runnable directly from an IDE via its `__main__` block.
 

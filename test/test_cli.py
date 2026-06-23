@@ -59,7 +59,7 @@ def test_build_generates_dockerfile(project, monkeypatch):
     # Never actually invoke Docker.
     monkeypatch.setattr(DeploymentManager, "build_docker_image", lambda self, title: True)
 
-    cli.run_build(argparse.Namespace(build=True))
+    cli.run_build(argparse.Namespace(file=None))
 
     dockerfile = project / "apipod-deploy" / "Dockerfile"
     assert dockerfile.exists()
@@ -76,7 +76,7 @@ def test_simulate_applies_intent_and_starts(project, monkeypatch):
     monkeypatch.setattr("uvicorn.run", fake_uvicorn_run)
 
     args = argparse.Namespace(
-        simulate="serverless", direct=None, entrypoint="main.py", host="127.0.0.1", port=8123
+        target="serverless", entrypoint="main.py", native=False, host="127.0.0.1", port=8123
     )
     cli.run_simulate(args)
 
