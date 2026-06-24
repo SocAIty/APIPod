@@ -304,5 +304,5 @@ result = task.get_result()
 
 ---
 <p align="center">
-  Made with ❤️ by <a href="https://socaity.com">SocAIty</a>
+  Made with ❤️ by <a href="https://socaity.ai">SocAIty</a>
 </p>
