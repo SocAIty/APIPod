@@ -22,7 +22,6 @@ def tag_path(request_model: Type) -> str:
 
 def _schema_endpoint(request_model: Type, return_value: Any, name: str):
     """Build an endpoint whose only parameter is annotated with ``request_model``."""
-
     def endpoint(request):
         return return_value
 
@@ -59,7 +58,7 @@ class SchemaCase:
 CASES = [
     SchemaCase(
         schemas.ChatCompletionRequest, schemas.ChatCompletionResponse,
-        {"messages": [{"role": "user", "content": "hi"}]},
+        payload={"messages": [{"role": "user", "content": "hi"}]},
         raw="hello there",
         typed=schemas.ChatCompletionResponse(
             created=0,
@@ -69,7 +68,7 @@ CASES = [
     ),
     SchemaCase(
         schemas.CompletionRequest, schemas.CompletionResponse,
-        {"prompt": "hi"},
+        payload={"prompt": "hi"},
         raw="completed",
         typed=schemas.CompletionResponse(
             created=0,
@@ -78,28 +77,28 @@ CASES = [
     ),
     SchemaCase(
         schemas.EmbeddingRequest, schemas.EmbeddingResponse,
-        {"input": "hi"},
+        payload={"input": "hi"},
         raw=[0.1, 0.2, 0.3],
         typed=schemas.EmbeddingResponse(data=[schemas.EmbeddingData(embedding=[0.1, 0.2, 0.3], index=0)]),
     ),
     SchemaCase(
         schemas.ImageGenerationRequest, schemas.ImageGenerationResponse,
-        {"prompt": "a cat"}, raw={"data": []},
+        payload={"prompt": "a cat"}, raw={"data": []},
         typed=schemas.ImageGenerationResponse(created=0, data=[]),
     ),
     SchemaCase(
         schemas.VideoGenerationRequest, schemas.VideoGenerationResponse,
-        {"prompt": "a cat"}, raw={"data": []},
+        payload={"prompt": "a cat"}, raw={"data": []},
         typed=schemas.VideoGenerationResponse(created=0, data=[]),
     ),
     SchemaCase(
         schemas.SpeechRequest, schemas.SpeechResponse,
-        {"input": "hello"}, raw={"data": []},
+        payload={"input": "hello"}, raw={"data": []},
         typed=schemas.SpeechResponse(created=0, data=[]),
     ),
     SchemaCase(
         schemas.Generation3DRequest, schemas.Generation3DResponse,
-        {"prompt": "a chair"}, raw={"data": []},
+        payload={"prompt": "a chair"}, raw={"data": []},
         typed=schemas.Generation3DResponse(created=0, data=[]),
     ),
     SchemaCase(
@@ -115,3 +114,4 @@ def register_mapping(app):
         tag = SCHEMA_REGISTRY[case.request_model].tag.replace("_", "-")
         app.endpoint(f"/{tag}-raw")(_schema_endpoint(case.request_model, case.raw, f"{tag}_raw"))
         app.endpoint(f"/{tag}-typed")(_schema_endpoint(case.request_model, case.typed, f"{tag}_typed"))
+        app.endpoint(f"/{tag}-none")(_schema_endpoint(case.request_model, None, f"{tag}_none"))

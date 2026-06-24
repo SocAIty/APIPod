@@ -405,12 +405,15 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
 
     def _create_standard_endpoint_decorator(self, plan: EndpointExecutionPlan):
         """Create a decorator for standard and schema endpoints (direct execution)."""
+        route_kwargs = dict(plan.route_kwargs)
+        if plan.is_schema_endpoint:
+            route_kwargs["response_model_exclude_none"] = True
         fastapi_route_decorator = self.api_route(
             path=plan.path,
             methods=plan.active_methods,
             response_model=plan.schema_binding.response_model if plan.is_schema_endpoint else None,
             *plan.route_args,
-            **plan.route_kwargs
+            **route_kwargs
         )
 
         def decorator(func: Callable) -> Callable:

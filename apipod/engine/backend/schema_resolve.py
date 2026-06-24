@@ -187,26 +187,56 @@ def wrap_schema_response(result: Any, binding: SchemaBinding) -> Any:
     return response_model.model_validate(payload)
 
 
+# Empty values for required JSON-schema property types (`created` is filled by the envelope).
+_SCHEMA_EMPTY = {"string": "", "array": [], "integer": 0, "object": {}}
+
+
+def _schema_defaults(model: Type[BaseModel]) -> dict:
+    """Required-field empties from pydantic's JSON schema."""
+    schema = model.model_json_schema()
+    properties = schema.get("properties") or {}
+    # Only top-level required fields; nested item shapes are validated by pydantic later.
+    return {
+        name: _SCHEMA_EMPTY[prop["type"]]
+        for name in schema.get("required") or []
+        if name != "created" and (prop := properties.get(name)) and prop.get("type") in _SCHEMA_EMPTY
+    }
+
+
 def _normalize_response_model(result: Any, response_model: Type) -> dict:
     """
     Normalize raw endpoint results into a dictionary matching the response model.
     Handles convenient raw shapes for chat, completion, embedding and transcription.
     """
+    # None → empty text or dict; dict gaps are filled from schema defaults below.
+    if result is None:
+        result = "" if response_model in (ChatCompletionResponse, CompletionResponse, TranscriptionResponse) else {}
+
+    # Shorthand raw returns authors may use instead of a full response dict.
     if response_model is ChatCompletionResponse and isinstance(result, str):
         result = {"choices": [{"index": 0, "message": {"content": result}, "finish_reason": "stop"}]}
     elif response_model is CompletionResponse and isinstance(result, str):
         result = {"choices": [{"text": result, "index": 0, "finish_reason": "stop"}]}
     elif response_model is EmbeddingResponse and isinstance(result, list):
-        vectors = result if result and isinstance(result[0], (list, tuple)) else [result]
-        result = {"data": [{"embedding": list(vector), "index": i} for i, vector in enumerate(vectors)]}
+        if not result:
+            result = {"data": []}
+        elif isinstance(result[0], (list, tuple)):
+            result = {"data": [{"embedding": list(vector), "index": i} for i, vector in enumerate(result)]}
+        else:
+            result = {"data": [{"embedding": list(result), "index": 0}]}
     elif response_model is TranscriptionResponse and isinstance(result, str):
         result = {"text": result}
 
-    return _normalize_result(result, response_model)
+    payload = _normalize_result(result, response_model)
+    if not isinstance(payload, dict):
+        return payload
+    # Defaults first, then author payload; drop None so defaults apply.
+    return {**_schema_defaults(response_model), **{k: v for k, v in payload.items() if v is not None}}
 
 
 def _normalize_result(result: Any, response_model: Type) -> dict:
     """Bring raw results into dict form; media files are lifted into the `data` list."""
+    # Single file or file list → standard media envelope shape.
     if isinstance(result, MediaFile):
         return {"data": [result]}
     if isinstance(result, (list, tuple)) and result and all(isinstance(item, MediaFile) for item in result):

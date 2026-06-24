@@ -2,7 +2,7 @@
 <h3 align="center">Build, Deploy, and publish AI Services with Ease</h3>
 
 <p align="center">
-  <a href="https://www.socaity.com">
+  <a href="https://www.socaity.ai">
     <img src="docs/example_images/APIPod.png" height="200" alt="APIPod Logo" />
   </a>
 </p>
@@ -232,5 +232,5 @@ client.text_to_speech("what a time to be alive")
 
 ---
 <p align="center">
-  Made with ❤️ by <a href="https://socaity.com">SocAIty</a>
+  Made with ❤️ by <a href="https://socaity.ai">SocAIty</a>
 </p>

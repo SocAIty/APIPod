@@ -13,7 +13,7 @@ dispatches to whatever runs behind it.
 exactly one model, so forcing clients to repeat its name adds nothing.
 """
 
-from typing import Any, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field
 
 from .media_files import FileModel, ImageFileModel, AudioFileModel, VideoFileModel, ThreeDFileModel
@@ -36,6 +36,11 @@ class APIPodSchemaBase(BaseModel):
     AudioFileModel, ...) which accept uploads, FileModel JSON objects, URLs
     and base64 strings. At runtime the file-handling layer replaces them
     with parsed media-toolkit objects before the endpoint function runs.
+
+    Serialization omits optional fields that are ``None`` so wire JSON matches
+    OpenAI-style responses (no ``"model": null`` or ``"usage": null`` keys).
+    Pass ``exclude_none=False`` to :meth:`model_dump` / :meth:`model_dump_json`
+    when you need explicit nulls.
     """
 
     model_config = {
@@ -44,6 +49,14 @@ class APIPodSchemaBase(BaseModel):
         "populate_by_name": True,
         "arbitrary_types_allowed": True
     }
+
+    def model_dump(self, **kwargs: Any) -> Dict[str, Any]:
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump(**kwargs)
+
+    def model_dump_json(self, **kwargs: Any) -> str:
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump_json(**kwargs)
 
 
 # =====================================================
