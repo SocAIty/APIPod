@@ -8,6 +8,8 @@ from apipod.engine.signatures.policies import FastAPISignaturePolicies
 from apipod.engine.files.base_file_mixin import _BaseFileHandlingMixin
 from apipod.engine.utils import replace_func_signature
 from apipod.engine.signatures.analysis import job_progress_param_names
+from apipod.engine.endpoint_config import EndpointExecutionPlan
+from apipod.engine.backend.schema_resolve import openapi_schema_annotation, resolve_request_model
 from apipod.engine.jobs.job_progress import JobProgress
 from media_toolkit import MediaList, MediaDict, ImageFile, AudioFile, VideoFile, MediaFile
 import functools
@@ -224,13 +226,42 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
         func = replace_func_signature(func, inspect.Signature(parameters=body_params))
         return func
 
-    def _prepare_func_for_media_file_upload_with_fastapi(self, func: callable, max_upload_file_size_mb: float = None) -> callable:
+    def _apply_openapi_request_model(self, func: Callable, plan: EndpointExecutionPlan | None) -> Callable:
+        """Swap schema param annotations when ``stream`` must be hidden from OpenAPI."""
+        if plan is None or plan.schema_binding is None or plan.is_streaming:
+            return func
+
+        sig = inspect.signature(func)
+        new_params = []
+        changed = False
+        for param in sig.parameters.values():
+            if resolve_request_model(param.annotation) is None:
+                new_params.append(param)
+                continue
+            new_annotation = openapi_schema_annotation(param.annotation, is_streaming=plan.is_streaming)
+            if new_annotation is param.annotation:
+                new_params.append(param)
+            else:
+                new_params.append(param.replace(annotation=new_annotation))
+                changed = True
+
+        if not changed:
+            return func
+        return replace_func_signature(func, sig.replace(parameters=new_params))
+
+    def _prepare_func_for_media_file_upload_with_fastapi(
+        self,
+        func: callable,
+        max_upload_file_size_mb: float = None,
+        plan: EndpointExecutionPlan | None = None,
+    ) -> callable:
         """
         Prepare a function for FastAPI
         1. Adds file upload logic to convert parameters
         2. Injects a dummy JobProgress if the function expects it but we're not using a queue
         3. Removes job progress parameter from the function signature (for OpenAPI docs)
-        4. Replaces upload file parameters with FastAPI File type
+        4. Strips ``stream`` from schema request models when the endpoint is not streaming
+        5. Replaces upload file parameters with FastAPI File type
         """
         # 1. Add file upload conversion logic (must be first to handle positional args)
         file_upload_modified = self._handle_file_uploads(func)
@@ -241,8 +272,11 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
         # 3. Remove job progress parameter from signature (so it doesn't show in OpenAPI)
         no_job_progress = self._remove_job_progress_from_signature(with_dummy_progress)
 
-        # 4. Update signature with file upload parameters (converts to Form/File)
-        with_file_upload_signature = self._update_signature(no_job_progress, max_upload_file_size_mb)
+        # 4. Drop ``stream`` from schema body models when the plan says the endpoint is not streaming
+        openapi_adjusted = self._apply_openapi_request_model(no_job_progress, plan)
+
+        # 5. Update signature with file upload parameters (converts to Form/File)
+        with_file_upload_signature = self._update_signature(openapi_adjusted, max_upload_file_size_mb)
 
         return with_file_upload_signature
 

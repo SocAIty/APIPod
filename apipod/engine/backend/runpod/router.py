@@ -39,6 +39,8 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         # serverless worker (set by APIPod(simulate="serverless-runpod", direct=True)).
         self.simulate = simulate
         self.routes = {}  # routes are organized like {"ROUTE_NAME": "ROUTE_FUNCTION"}
+        self._endpoint_plans: dict[str, EndpointExecutionPlan] = {}
+        self._endpoint_source_funcs: dict[str, Callable] = {}
 
         self.add_standard_routes()
 
@@ -50,6 +52,8 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
 
         def decorator(func: Callable) -> Callable:
             plan = build_plan(func, path=path)
+            self._endpoint_plans[path] = plan
+            self._endpoint_source_funcs[path] = func
             route = self._build_route(func, plan)
             self.routes[path] = route
             return route
@@ -272,16 +276,20 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
 
         runpod.serverless.start({"handler": self.handler, "return_aggregate_stream": True})
 
-    def _create_openapi_compatible_function(self, func: Callable) -> Callable:
+    def _create_openapi_compatible_function(
+        self,
+        func: Callable,
+        plan: EndpointExecutionPlan | None = None,
+    ) -> Callable:
         """
-        Create a function compatible with FastAPI OpenAPI generation by applying 
+        Create a function compatible with FastAPI OpenAPI generation by applying
         the same conversion logic as the FastAPI mixin, but without runtime dependencies.
 
         This generates the rich schema with proper file upload handling.
 
         Args:
             func: Original function to convert
-            max_upload_file_size_mb: Maximum file size in MB
+            plan: Endpoint execution plan (controls ``stream`` in request schema)
 
         Returns:
             Function with FastAPI-compatible signature for OpenAPI generation
@@ -294,7 +302,9 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         # Create a temporary instance of the FastAPI mixin to use its conversion methods
         temp_mixin = _fast_api_file_handling_mixin(max_upload_file_size_mb=5)
         # Apply the same preparation logic as FastAPI router
-        with_file_upload_signature = temp_mixin._prepare_func_for_media_file_upload_with_fastapi(func, 5)
+        with_file_upload_signature = temp_mixin._prepare_func_for_media_file_upload_with_fastapi(
+            func, 5, plan=plan,
+        )
         # 4. Set proper return type for job-based endpoints
 
         sig = inspect.signature(with_file_upload_signature)
@@ -366,9 +376,11 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
 
         fastapi_routes = []
         for path, func in self.routes.items():
+            source_func = self._endpoint_source_funcs.get(path, func)
+            plan = self._endpoint_plans.get(path)
             # Create FastAPI-compatible function for rich OpenAPI generation
             try:
-                compatible_func = self._create_openapi_compatible_function(func)
+                compatible_func = self._create_openapi_compatible_function(source_func, plan)
                 fastapi_routes.append(APIRoute(
                     path=f"/{path.strip('/')}", 
                     endpoint=compatible_func, 

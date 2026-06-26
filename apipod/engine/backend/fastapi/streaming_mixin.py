@@ -108,7 +108,7 @@ class _FastAPIStreamingMixin:
                 return StreamingResponse(generator, media_type="text/event-stream", headers=headers)
 
             with_upload = self._prepare_func_for_media_file_upload_with_fastapi(
-                streaming_wrapper, plan.max_upload_file_size_mb
+                streaming_wrapper, plan.max_upload_file_size_mb, plan=plan,
             )
             return fastapi_route_decorator(with_upload)
 

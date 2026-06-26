@@ -4,7 +4,19 @@ Backend-neutral analysis of function signatures and return types.
 
 import inspect
 from collections.abc import AsyncIterator, Iterator
-from typing import Callable, get_origin, get_type_hints
+from types import UnionType
+from typing import Callable, Union, get_args, get_origin, get_type_hints
+
+
+def _return_type_includes_iterator(return_type) -> bool:
+    """True when *return_type* is or contains ``Iterator`` / ``AsyncIterator``."""
+    if return_type is None:
+        return False
+    origin = get_origin(return_type)
+    if origin in (Union, UnionType):
+        return any(_return_type_includes_iterator(arg) for arg in get_args(return_type))
+    resolved = origin or return_type
+    return inspect.isclass(resolved) and issubclass(resolved, (Iterator, AsyncIterator))
 
 
 def is_streaming_endpoint(func: Callable) -> bool:
@@ -12,7 +24,8 @@ def is_streaming_endpoint(func: Callable) -> bool:
 
     A generator function (``yield``) or async generator function (``async yield``)
     is always considered streaming.  A regular function whose return annotation
-    is ``Iterator[...]`` / ``AsyncIterator[...]`` or any subclass is also detected.
+    is ``Iterator[...]`` / ``AsyncIterator[...]`` (including inside a ``Union``)
+    is also detected.
     """
     target = inspect.unwrap(func)
     if inspect.isgeneratorfunction(target) or inspect.isasyncgenfunction(target):
@@ -21,10 +34,7 @@ def is_streaming_endpoint(func: Callable) -> bool:
         return_type = get_type_hints(target).get("return")
     except Exception:
         return False
-    if return_type is None:
-        return False
-    origin = get_origin(return_type) or return_type
-    return inspect.isclass(origin) and issubclass(origin, (Iterator, AsyncIterator))
+    return _return_type_includes_iterator(return_type)
 
 
 def is_injected_progress_param(param: inspect.Parameter) -> bool:

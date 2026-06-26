@@ -1,9 +1,13 @@
 import inspect
-from typing import Any
+from typing import Any, get_args, get_origin
 
 from fastapi import Body, Form
 
-from apipod.engine.backend.schema_resolve import SCHEMA_REGISTRY, resolve_request_model
+from apipod.engine.backend.schema_resolve import (
+    SCHEMA_REGISTRY,
+    resolve_request_model,
+    source_request_model,
+)
 
 # Request schemas that are interpreted as JSON bodies by router decorators,
 # even when endpoint authors do not specify Body(...). Derived from the
@@ -35,7 +39,15 @@ class FastAPISignaturePolicies:
         True if annotation is (or contains, for Optional/Union annotations) a
         registered APIPod request schema or a subclass of one.
         """
-        return resolve_request_model(annotation) is not None
+        if resolve_request_model(annotation) is not None:
+            return True
+        origin = get_origin(annotation)
+        if origin is not None:
+            return any(
+                FastAPISignaturePolicies.is_supported_request_schema(arg)
+                for arg in get_args(annotation)
+            )
+        return inspect.isclass(annotation) and source_request_model(annotation) is not annotation
 
     @classmethod
     def build_non_file_default(cls, annotation: Any, default: Any, is_optional: bool):

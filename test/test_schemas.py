@@ -20,6 +20,7 @@ from apipod.engine.backend.schema_resolve import SCHEMA_REGISTRY
 from conftest import build_service
 from services import schema_service
 from services.schema_service import CASES
+from services import streaming_service
 
 
 def _response_ref(spec: dict, path: str) -> str:
@@ -31,6 +32,22 @@ def _response_ref(spec: dict, path: str) -> str:
         )
     except KeyError:
         return ""
+
+
+def _request_schema_ref(spec: dict, path: str) -> str:
+    """Return the $ref of the JSON request body schema for a POST endpoint."""
+    try:
+        return spec["paths"][path]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    except KeyError:
+        return ""
+
+
+def _schema_has_property(spec: dict, schema_ref: str, prop: str) -> bool:
+    if not schema_ref.startswith("#/components/schemas/"):
+        return False
+    name = schema_ref.rsplit("/", 1)[-1]
+    properties = spec.get("components", {}).get("schemas", {}).get(name, {}).get("properties", {})
+    return prop in properties
 
 
 # --------------------------------------------------------------------------- #
@@ -49,6 +66,29 @@ def test_response_model_auto_assigned_from_registry():
             actual = _response_ref(spec, path)
             assert actual == expected, (
                 f"{request_model.__name__}: expected 200 $ref {expected!r}, got {actual!r}"
+            )
+
+
+def test_stream_request_field_on_streaming_schema_endpoint():
+    """A schema endpoint detected as streaming keeps ``stream`` in its OpenAPI body."""
+    with build_service(streaming_service.register, simulate="serverless") as client:
+        spec = client.get("/openapi.json").json()
+        chat_ref = _request_schema_ref(spec, "/chat")
+        assert _schema_has_property(spec, chat_ref, "stream")
+
+
+def test_stream_request_field_hidden_on_non_streaming_schema_endpoints():
+    """Non-streaming schema endpoints omit ``stream`` from OpenAPI even when the model defines it."""
+    with build_service(schema_service.register_all) as client:
+        spec = client.get("/openapi.json").json()
+        for request_model in SCHEMA_REGISTRY:
+            if "stream" not in request_model.model_fields:
+                continue
+            path = schema_service.tag_path(request_model)
+            ref = _request_schema_ref(spec, path)
+            assert ref, f"missing OpenAPI request schema for {path}"
+            assert not _schema_has_property(spec, ref, "stream"), (
+                f"{path} should not expose stream (handler is not streaming)"
             )
 
 

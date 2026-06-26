@@ -181,6 +181,13 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
 
         return ret_job
 
+    def _include_stream_link_for(self, job_function: Callable) -> bool:
+        """True when the endpoint plan marks the job function as streaming."""
+        if self.stream_store is None:
+            return False
+        plan = self._endpoint_plans.get(f"{job_function.__module__}.{job_function.__qualname__}")
+        return plan is not None and plan.is_streaming
+
     def post_cancel_job(self, job_id: str) -> dict:
         """Cancel a background job (gateway / orchestrator integration)."""
         job_id = job_id.strip().strip('"').strip("'").strip("?").strip("#")
@@ -254,7 +261,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             # the job is queued, the worker produces chunks into the stream store
             # and the client consumes them from GET /stream/{job_id}. Without a
             # queue (plain FastAPI) streaming goes straight to the client.
-            if plan.is_streaming and not plan.should_use_queue:
+            if plan.is_streaming and plan.schema_binding is None and not plan.should_use_queue:
                 return self._create_streaming_endpoint_decorator(plan)(func)
             if plan.should_use_queue:
                 return self._create_task_endpoint_decorator(plan)(func)
@@ -344,7 +351,9 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             # Add job queue functionality and prepare for FastAPI file handling
             queue_decorated = queue_decorator(func)
 
-            upload_enabled = self._prepare_func_for_media_file_upload_with_fastapi(queue_decorated, plan.max_upload_file_size_mb)
+            upload_enabled = self._prepare_func_for_media_file_upload_with_fastapi(
+                queue_decorated, plan.max_upload_file_size_mb, plan=plan,
+            )
             return fastapi_route_decorator(upload_enabled)
 
         return decorator
@@ -364,7 +373,9 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
 
         def decorator(func: Callable) -> Callable:
             result_modified = self._modify_result_decorator(func, plan, queued=False)
-            with_file_upload_signature = self._prepare_func_for_media_file_upload_with_fastapi(result_modified, plan.max_upload_file_size_mb)
+            with_file_upload_signature = self._prepare_func_for_media_file_upload_with_fastapi(
+                result_modified, plan.max_upload_file_size_mb, plan=plan,
+            )
             return fastapi_route_decorator(with_file_upload_signature)
 
         return decorator

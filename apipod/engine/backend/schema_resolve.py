@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from types import UnionType
 from typing import Any, Callable, Iterable, Iterator, Optional, Type, Union, get_args, get_origin
 
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 from media_toolkit import MediaFile
 
 from apipod.common.schemas import *
@@ -81,6 +81,63 @@ def _registry_spec(request_model: Type) -> Optional[SchemaEndpointSpec]:
         if cls in SCHEMA_REGISTRY:
             return SCHEMA_REGISTRY[cls]
     return None
+
+
+_OPENAPI_WITHOUT_STREAM_CACHE: dict[type, type] = {}
+_OPENAPI_DOC_TO_SOURCE: dict[type, type] = {}
+
+
+def source_request_model(model: type[BaseModel]) -> type[BaseModel]:
+    """Return the author-facing schema for an OpenAPI doc model, or *model* itself."""
+    return _OPENAPI_DOC_TO_SOURCE.get(model, model)
+
+
+def openapi_request_model(model: type[BaseModel], *, is_streaming: bool) -> type[BaseModel]:
+    """Return *model*, or a cached copy with ``stream`` removed for OpenAPI / validation.
+
+    When ``is_streaming`` is false and the model declares a ``stream`` field, a
+    sibling model is built via :func:`pydantic.create_model` so non-streaming
+    endpoints do not advertise or accept ``stream`` in the request body.
+    """
+    if is_streaming or "stream" not in model.model_fields:
+        return model
+    if model in _OPENAPI_WITHOUT_STREAM_CACHE:
+        return _OPENAPI_WITHOUT_STREAM_CACHE[model]
+
+    fields = {
+        name: (field.annotation, field)
+        for name, field in model.model_fields.items()
+        if name != "stream"
+    }
+    doc_model = create_model(
+        f"{model.__name__}OpenAPI",
+        __config__=model.model_config,
+        **fields,
+    )
+    _OPENAPI_WITHOUT_STREAM_CACHE[model] = doc_model
+    _OPENAPI_DOC_TO_SOURCE[doc_model] = model
+    return doc_model
+
+
+def openapi_schema_annotation(annotation: Any, *, is_streaming: bool) -> Any:
+    """Apply :func:`openapi_request_model` to a parameter annotation (incl. Optional)."""
+    resolved = resolve_request_model(annotation)
+    if resolved is None:
+        return annotation
+
+    doc_model = openapi_request_model(resolved, is_streaming=is_streaming)
+    if doc_model is resolved:
+        return annotation
+
+    origin = get_origin(annotation)
+    if origin in (Union, UnionType):
+        args = get_args(annotation)
+        new_args = tuple(
+            doc_model if resolve_request_model(arg) is not None else arg
+            for arg in args
+        )
+        return origin[new_args]
+    return doc_model
 
 
 def resolve_request_model(annotation: Any) -> Optional[Type]:
