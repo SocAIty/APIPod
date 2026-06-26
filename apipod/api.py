@@ -10,6 +10,8 @@ from apipod.common.settings import (
 )
 from apipod.engine.backend.fastapi.router import SocaityFastAPIRouter
 from apipod.engine.backend.runpod.router import SocaityRunpodRouter
+from apipod.engine.streaming.local_stream_store import LocalStreamStore
+
 
 # (backend_class, use_job_queue, runpod_simulate)
 _Resolution = Tuple[type, bool, bool]
@@ -63,7 +65,8 @@ def APIPod(
         job_queue = JobQueue()
 
     if use_job_queue and "stream_store" not in kwargs:
-        kwargs["stream_store"] = _create_stream_store()
+        
+        kwargs["stream_store"] = LocalStreamStore()
 
     return SocaityFastAPIRouter(job_queue=job_queue, *args, **kwargs)
 
@@ -127,7 +130,3 @@ def _parse_target(target: str) -> Tuple[COMPUTE, Optional[PROVIDER]]:
     except ValueError:
         raise ValueError(f"Invalid provider '{provider_str}'. Choose from: {[p.value for p in PROVIDER]}")
 
-
-def _create_stream_store():
-    from apipod.engine.streaming.local_stream_store import LocalStreamStore
-    return LocalStreamStore()

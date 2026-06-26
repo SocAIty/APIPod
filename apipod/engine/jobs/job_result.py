@@ -93,7 +93,7 @@ class JobResultFactory:
         return data
 
     @staticmethod
-    def from_base_job(job: BaseJob) -> JobResult:
+    def from_base_job(job: BaseJob, *, include_stream_link: bool = False) -> JobResult:
         """Map a :class:`BaseJob` to the public :class:`JobResult`."""
         m = job.metrics
         metrics = JobMetrics(
@@ -115,7 +115,7 @@ class JobResultFactory:
             links=JobLinks(
                 status=f"/status/{job.id}",
                 cancel=f"/cancel/{job.id}",
-                stream=f"/stream/{job.id}",
+                stream=f"/stream/{job.id}" if include_stream_link else None,
             ),
         )
 

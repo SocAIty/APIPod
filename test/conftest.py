@@ -39,9 +39,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # Test asset files (used by the media upload/download tests)
 # --------------------------------------------------------------------------- #
 FILES_DIR = Path(__file__).parent / "files"
-IMAGE_FILE = FILES_DIR / "socaity_logo_for_white_bg.png"
-AUDIO_FILE = FILES_DIR / "hermine_clone.wav"
-VIDEO_FILE = FILES_DIR / "test_video_ultra_short_short.mp4"
+IMAGE_FILE = FILES_DIR / "test_image.png"
+AUDIO_FILE = FILES_DIR / "test_audio.wav"
+VIDEO_FILE = FILES_DIR / "test_video.mp4"
 
 # Entrypoint booted by the fastSDK end-to-end execution tests.
 INFERENCE_SERVICE = Path(__file__).parent / "services" / "core_service.py"

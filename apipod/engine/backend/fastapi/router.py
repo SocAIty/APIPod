@@ -38,7 +38,6 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             prefix: str = "",  # "/api",
             max_upload_file_size_mb: float = None,
             job_queue=None,
-            lifespan=None,
             *args,
             **kwargs):
         """
@@ -51,20 +50,16 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             prefix: The API route prefix
             max_upload_file_size_mb: Maximum file size in MB for uploads
             job_queue: Optional custom JobQueue implementation
-            lifespan: Optional async context manager for custom startup/shutdown logic
             args: Additional arguments
             kwargs: May include ``stream_store`` (SSE backend for GET /stream/{job_id}),
                 plus additional keyword arguments for parent classes.
         """
-        # Extract user-provided lifespan (explicit param or kwarg) before parent init
-        user_lifespan = lifespan or kwargs.pop('lifespan', None)
         stream_store = kwargs.pop("stream_store", None)
 
         # Initialize parent classes
         api_router_params = inspect.signature(APIRouter.__init__).parameters
         api_router_kwargs = {k: kwargs.get(k) for k in api_router_params if k in kwargs}
-        api_router_kwargs.pop('lifespan', None)  # handled via composed lifespan below
-
+     
         APIRouter.__init__(self, **api_router_kwargs)
         _BaseBackend.__init__(self, title=title, summary=summary, *args, **kwargs)
         _QueueMixin.__init__(self, job_queue=job_queue, *args, **kwargs)
@@ -72,15 +67,12 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
 
         self.status = SERVER_HEALTH.INITIALIZING
 
-        # Registry for functions that workers can execute. Keys are function names.
-        self._job_func_registry: dict = {}
+        # Queued endpoint plans keyed by worker ``__name__`` (see ``_create_task_endpoint_decorator``).
+        self._endpoint_plans: dict[str, EndpointExecutionPlan] = {}
         # Stop event and thread handle for in-process worker (dev mode)
         self._worker_stop_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
         self._logger = logging.getLogger(__name__)
-
-        # Build a composed lifespan that merges internal worker hooks with the user-provided lifespan
-        combined_lifespan = self._build_lifespan(user_lifespan)
 
         # Create or use provided FastAPI app
         if app is None:
@@ -88,11 +80,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
                 title=self.title,
                 summary=self.summary,
                 contact={"name": "SocAIty", "url": "https://www.socaity.ai"},
-                lifespan=combined_lifespan,
             )
-        else:
-            # Existing app: replace its lifespan with our composed version
-            app.router.lifespan_context = combined_lifespan
 
         self.app: FastAPI = app
         self.prefix = prefix
@@ -116,67 +104,6 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         # Save original OpenAPI function and replace it
         self._orig_openapi_func = self.app.openapi
         self.app.openapi = self.custom_openapi
-
-    # ------------------------------------------------------------------
-    # Lifespan & worker lifecycle
-    # ------------------------------------------------------------------
-
-    def _build_lifespan(self, user_lifespan=None):
-        """
-        Build a composed lifespan context manager that runs:
-        1. Internal worker startup
-        2. User-provided lifespan (if any)
-        3. Internal worker shutdown on exit
-        """
-        router_self = self  # capture for closure
-
-        @asynccontextmanager
-        async def _combined_lifespan(app):
-            router_self._start_background_worker()
-            try:
-                if user_lifespan:
-                    async with user_lifespan(app):
-                        yield
-                else:
-                    yield
-            finally:
-                router_self._stop_background_worker()
-
-        return _combined_lifespan
-
-    def _start_background_worker(self):
-        """Start the in-process job queue worker in a daemon thread (dev convenience)."""
-        try:
-            if self.job_queue and hasattr(self.job_queue, "start_worker"):
-                def _run():
-                    try:
-                        self.job_queue.start_worker(
-                            func_registry=self._job_func_registry,
-                            worker_name="api-worker",
-                            stop_event=self._worker_stop_event,
-                        )
-                    except Exception:
-                        self._logger.exception("Worker thread exited with exception")
-
-                thread = threading.Thread(target=_run, daemon=True)
-                thread.start()
-                self._worker_thread = thread
-        except Exception:
-            self._logger.exception("Failed to start in-process worker on startup")
-
-    def _stop_background_worker(self):
-        """Signal the background worker to stop and shut down the job queue."""
-        try:
-            self._worker_stop_event.set()
-        except Exception:
-            pass
-
-        if self.job_queue and hasattr(self.job_queue, "shutdown"):
-            try:
-                self.job_queue.shutdown()
-            except Exception:
-                self._logger.exception("Error shutting down job queue")
-
     # ------------------------------------------------------------------
     # Standard routes
     # ------------------------------------------------------------------
@@ -240,9 +167,14 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         if self.job_queue is None:
             return JobResultFactory.job_not_found(job_id)
 
-        ret_job = self.job_queue.get_job_result(job_id)
-        if ret_job is None:
+        job = self.job_queue.get_job(job_id)
+        if job is None:
             return JobResultFactory.job_not_found(job_id)
+
+        ret_job = JobResultFactory.from_base_job(
+            job,
+            include_stream_link=self._include_stream_link_for(job.job_function),
+        )
 
         if return_format != 'json':
             ret_job = JobResultFactory.gzip_job_result(ret_job)
@@ -267,6 +199,23 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
                 detail="Cancellation is not supported for this job queue.",
             ) from None
         return {"id": job_id, "status": "cancelled", "message": "Job cancelled."}
+
+    def add_job(self, func: Callable, job_params: dict) -> JobResult:
+        """Enqueue a task and return a :class:`JobResult` with endpoint-aware links."""
+        if self.job_queue is None:
+            raise ValueError("Job Queue is not initialized. Cannot add job.")
+        job = self.job_queue._add_job(job_function=func, job_params=job_params)
+        
+        # check if the job result will include the stream option
+        include_stream_link = False
+        if self.stream_store is not None:
+            plan = self._endpoint_plans.get(f"{func.__module__}.{func.__qualname__}")
+            include_stream_link = plan is not None and plan.is_streaming
+
+        return JobResultFactory.from_base_job(
+            job,
+            include_stream_link=include_stream_link,
+        )
 
     def endpoint(self, path: str, methods: list[str] | None = None, max_upload_file_size_mb: int = None, queue_size: int = 500, use_queue: bool = None, *args, **kwargs):
         """
@@ -298,6 +247,8 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
                 route_args=args,
                 route_kwargs=kwargs,
             )
+            # save the plan for later use
+            self._endpoint_plans[f"{func.__module__}.{func.__qualname__}"] = plan
 
             # Streaming with a queue + stream store mimics a real deployment:
             # the job is queued, the worker produces chunks into the stream store
@@ -392,11 +343,6 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             func = self._modify_result_decorator(func, plan, queued=True)
             # Add job queue functionality and prepare for FastAPI file handling
             queue_decorated = queue_decorator(func)
-            # Register the function so workers can execute it (dev mode).
-            try:
-                self._job_func_registry[func.__name__] = func
-            except Exception:
-                pass
 
             upload_enabled = self._prepare_func_for_media_file_upload_with_fastapi(queue_decorated, plan.max_upload_file_size_mb)
             return fastapi_route_decorator(upload_enabled)

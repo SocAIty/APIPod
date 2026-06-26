@@ -17,6 +17,7 @@ HOST = "127.0.0.1"
 #SIMULATE = "serverless"
 SIMULATE = None
 
+
 def launch_core(port: int = 8000, host: str = HOST, simulate: str = SIMULATE) -> None:
     app = APIPod(simulate=simulate)
     core_service.register(app)
@@ -37,8 +38,18 @@ def launch_streaming(port: int = 8000, host: str = HOST, simulate: str = SIMULAT
     app.start(host=host, port=port)
 
 
+def launch_all(port: int = 8000, host: str = HOST, simulate: str = SIMULATE) -> None:
+    app = APIPod(simulate=simulate)
+    core_service.register(app)
+    schema_service.register_all(app)
+    schema_service.register_extended(app)
+    schema_service.register_mapping(app)
+    streaming_service.register(app)
+    app.start(host=host, port=port)
+
+
 if __name__ == "__main__":
-    
     # launch_core()
-    launch_schemas()
+    # launch_schemas()
     # launch_streaming()
+    launch_all()

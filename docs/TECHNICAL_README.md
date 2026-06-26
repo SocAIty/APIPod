@@ -65,7 +65,7 @@ A developer never assembles this matrix by hand. They express a single **intent*
 
 `APIPod()` in `api.py` is not a class — it is a factory. It resolves the intent (managed → `_resolve_managed`, otherwise → `_resolve_intent`) into a `(backend_class, use_job_queue, runpod_simulate)` triple and returns one of:
 
-- **`SocaityFastAPIRouter`** — an `APIRouter` subclass bound to a `FastAPI` app. Used for development and dedicated compute (no queue), and for the serverless emulation (paired with an in-memory `JobQueue` + `LocalStreamStore` and a background worker thread started via the app lifespan).
+- **`SocaityFastAPIRouter`** — an `APIRouter` subclass bound to a `FastAPI` app. Used for development and dedicated compute (no queue), and for the serverless emulation (paired with an in-memory `JobQueue` + `LocalStreamStore` and a background worker thread).
 - **`SocaityRunpodRouter`** — a path-based dispatcher for RunPod serverless. There is no HTTP layer: RunPod delivers a JSON job whose `input.path` selects the registered function; the router converts files, injects `JobProgress`, executes, and returns a serialized `JobResult` (or a generator for streaming). It can also synthesize an OpenAPI schema by replaying the FastAPI signature conversion, so fastSDK clients can be generated against serverless deployments too. Its `simulate` flag chooses between RunPod's local API emulator (`apipod simulate serverless-runpod --native`) and the real worker (managed deployment).
 
 ## The endpoint pipeline (FastAPI backend)

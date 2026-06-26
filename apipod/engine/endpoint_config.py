@@ -3,7 +3,7 @@ Endpoint planning: backend-neutral analysis of an endpoint function.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from apipod.engine.backend.schema_resolve import SchemaBinding, get_schema_binding
 from apipod.engine.signatures.analysis import is_streaming_endpoint

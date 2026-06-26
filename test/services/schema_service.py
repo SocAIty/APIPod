@@ -9,10 +9,15 @@ tests (text, embedding and media-envelope schemas).
 """
 
 from dataclasses import dataclass
-from typing import Any, Type
+from pathlib import Path
+from typing import Any, Callable, Type
+
+from media_toolkit import AudioFile, ImageFile, VideoFile, media_from_any
 
 from apipod.common import schemas
 from apipod.engine.backend.schema_resolve import SCHEMA_REGISTRY
+
+_FILES_DIR = Path(__file__).resolve().parent.parent / "files"
 
 
 def tag_path(request_model: Type) -> str:
@@ -20,9 +25,30 @@ def tag_path(request_model: Type) -> str:
     return "/" + SCHEMA_REGISTRY[request_model].tag.replace("_", "-")
 
 
-def _schema_endpoint(request_model: Type, return_value: Any, name: str):
-    """Build an endpoint whose only parameter is annotated with ``request_model``."""
+def _load_test_media(file_name: str, media_type: Type):
+    """Read a fixture from ``test/files`` into a media-toolkit object."""
+    return media_from_any(str(_FILES_DIR / file_name), type_hint=media_type)
+
+
+def _schema_endpoint(
+    request_model: Type,
+    return_value: Any,
+    name: str,
+    *,
+    media_loader: Callable[[], Any] | None = None,
+    typed_response: Type | None = None,
+):
+    """Build an endpoint whose only parameter is annotated with ``request_model``.
+
+    When ``media_loader`` is set, the return value is produced at request time
+    (raw media file, or a typed response model built from that file).
+    """
     def endpoint(request):
+        if media_loader is not None:
+            media = media_loader()
+            if typed_response is not None:
+                return typed_response(created=0, data=[media])
+            return media
         return return_value
 
     endpoint.__name__ = name
@@ -51,8 +77,10 @@ class SchemaCase:
     request_model: Type
     response_model: Type
     payload: dict
-    raw: Any  # raw value the endpoint may return
-    typed: Any  # the response_model instance the endpoint may return
+    raw: Any = None
+    typed: Any = None
+    media_file: str | None = None
+    media_type: Type | None = None
 
 
 CASES = [
@@ -83,18 +111,21 @@ CASES = [
     ),
     SchemaCase(
         schemas.ImageGenerationRequest, schemas.ImageGenerationResponse,
-        payload={"prompt": "a cat"}, raw={"data": []},
-        typed=schemas.ImageGenerationResponse(created=0, data=[]),
+        payload={"prompt": "a cat"},
+        media_file="test_image.png",
+        media_type=ImageFile,
     ),
     SchemaCase(
         schemas.VideoGenerationRequest, schemas.VideoGenerationResponse,
-        payload={"prompt": "a cat"}, raw={"data": []},
-        typed=schemas.VideoGenerationResponse(created=0, data=[]),
+        payload={"prompt": "a cat"},
+        media_file="test_video.mp4",
+        media_type=VideoFile,
     ),
     SchemaCase(
         schemas.SpeechRequest, schemas.SpeechResponse,
-        payload={"input": "hello"}, raw={"data": []},
-        typed=schemas.SpeechResponse(created=0, data=[]),
+        payload={"input": "hello"},
+        media_file="test_audio.wav",
+        media_type=AudioFile,
     ),
     SchemaCase(
         schemas.Generation3DRequest, schemas.Generation3DResponse,
@@ -112,6 +143,18 @@ CASES = [
 def register_mapping(app):
     for case in CASES:
         tag = SCHEMA_REGISTRY[case.request_model].tag.replace("_", "-")
-        app.endpoint(f"/{tag}-raw")(_schema_endpoint(case.request_model, case.raw, f"{tag}_raw"))
-        app.endpoint(f"/{tag}-typed")(_schema_endpoint(case.request_model, case.typed, f"{tag}_typed"))
+        if case.media_file is not None:
+            loader = lambda f=case.media_file, t=case.media_type: _load_test_media(f, t)
+            app.endpoint(f"/{tag}-raw")(
+                _schema_endpoint(case.request_model, None, f"{tag}_raw", media_loader=loader)
+            )
+            app.endpoint(f"/{tag}-typed")(
+                _schema_endpoint(
+                    case.request_model, None, f"{tag}_typed",
+                    media_loader=loader, typed_response=case.response_model,
+                )
+            )
+        else:
+            app.endpoint(f"/{tag}-raw")(_schema_endpoint(case.request_model, case.raw, f"{tag}_raw"))
+            app.endpoint(f"/{tag}-typed")(_schema_endpoint(case.request_model, case.typed, f"{tag}_typed"))
         app.endpoint(f"/{tag}-none")(_schema_endpoint(case.request_model, None, f"{tag}_none"))

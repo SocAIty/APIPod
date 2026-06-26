@@ -4,7 +4,7 @@ Backend-neutral analysis of function signatures and return types.
 
 import inspect
 from collections.abc import AsyncIterator, Iterator
-from typing import Any, Callable, get_origin, get_type_hints
+from typing import Callable, get_origin, get_type_hints
 
 
 def is_streaming_endpoint(func: Callable) -> bool:

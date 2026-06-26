@@ -220,11 +220,11 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         del inputs["path"]
 
         result = self._router(route, job, **inputs)
-        
+
         # If it's a generator, return it directly for RunPod to stream
         if inspect.isgenerator(result):
             return result
-        
+
         # Otherwise return the JSON result
         return result
 
