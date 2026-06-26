@@ -65,5 +65,5 @@ def build_plan(
         route_args=route_args,
         route_kwargs=route_kwargs if route_kwargs is not None else {},
         schema_binding=schema_binding,
-        is_streaming=is_streaming_endpoint(func),
+        is_streaming=is_streaming_endpoint(func, schema_binding),
     )

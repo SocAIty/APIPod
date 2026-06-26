@@ -69,6 +69,16 @@ def test_response_model_auto_assigned_from_registry():
             )
 
 
+def test_non_streaming_schema_accepts_stream_false_in_body():
+    """OpenAI clients often send ``stream: false``; validation must not reject it."""
+    with build_service(schema_service.register_all) as client:
+        resp = client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "hi"}], "stream": False},
+        )
+        assert resp.status_code == 200, resp.text
+
+
 def test_stream_request_field_on_streaming_schema_endpoint():
     """A schema endpoint detected as streaming keeps ``stream`` in its OpenAPI body."""
     with build_service(streaming_service.register, simulate="serverless") as client:

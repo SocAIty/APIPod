@@ -26,7 +26,8 @@ from datetime import datetime, timezone
 from types import UnionType
 from typing import Any, Callable, Iterable, Iterator, Optional, Type, Union, get_args, get_origin
 
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, Field, create_model
+from pydantic.json_schema import SkipJsonSchema
 from media_toolkit import MediaFile
 
 from apipod.common.schemas import *
@@ -93,22 +94,29 @@ def source_request_model(model: type[BaseModel]) -> type[BaseModel]:
 
 
 def openapi_request_model(model: type[BaseModel], *, is_streaming: bool) -> type[BaseModel]:
-    """Return *model*, or a cached copy with ``stream`` removed for OpenAPI / validation.
+    """Return *model*, or a cached OpenAPI variant that hides ``stream`` when not streaming.
 
-    When ``is_streaming`` is false and the model declares a ``stream`` field, a
-    sibling model is built via :func:`pydantic.create_model` so non-streaming
-    endpoints do not advertise or accept ``stream`` in the request body.
+    When ``is_streaming`` is false and the model declares a ``stream`` field, a sibling
+    model is built via :func:`pydantic.create_model` with ``SkipJsonSchema`` on ``stream``.
+    The field stays in validation (OpenAI clients may send ``stream: false``) but is
+    omitted from the generated OpenAPI/JSON schema.
     """
     if is_streaming or "stream" not in model.model_fields:
         return model
     if model in _OPENAPI_WITHOUT_STREAM_CACHE:
         return _OPENAPI_WITHOUT_STREAM_CACHE[model]
 
-    fields = {
-        name: (field.annotation, field)
-        for name, field in model.model_fields.items()
-        if name != "stream"
-    }
+    stream_field = model.model_fields["stream"]
+    fields = {}
+    for name, field in model.model_fields.items():
+        if name == "stream":
+            fields[name] = (
+                SkipJsonSchema[bool],
+                Field(default=False, description=stream_field.description),
+            )
+        else:
+            fields[name] = (field.annotation, field)
+
     doc_model = create_model(
         f"{model.__name__}OpenAPI",
         __config__=model.model_config,
@@ -213,7 +221,7 @@ def prepare_schema_call(binding: SchemaBinding, call_kwargs: dict):
             f"Request body for parameter '{binding.param_name}' "
             f"({binding.request_model.__name__}) is missing"
         )
-    
+
     # Prepare the request object
     if isinstance(payload, binding.request_model):
         request = payload

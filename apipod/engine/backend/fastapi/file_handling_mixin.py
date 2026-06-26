@@ -260,7 +260,7 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
         1. Adds file upload logic to convert parameters
         2. Injects a dummy JobProgress if the function expects it but we're not using a queue
         3. Removes job progress parameter from the function signature (for OpenAPI docs)
-        4. Strips ``stream`` from schema request models when the endpoint is not streaming
+        4. Hides ``stream`` in OpenAPI (not validation) when the endpoint is not streaming
         5. Replaces upload file parameters with FastAPI File type
         """
         # 1. Add file upload conversion logic (must be first to handle positional args)
@@ -272,7 +272,7 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
         # 3. Remove job progress parameter from signature (so it doesn't show in OpenAPI)
         no_job_progress = self._remove_job_progress_from_signature(with_dummy_progress)
 
-        # 4. Drop ``stream`` from schema body models when the plan says the endpoint is not streaming
+        # 4. Hide ``stream`` in OpenAPI for non-streaming schema endpoints (validation keeps the field)
         openapi_adjusted = self._apply_openapi_request_model(no_job_progress, plan)
 
         # 5. Update signature with file upload parameters (converts to Form/File)
