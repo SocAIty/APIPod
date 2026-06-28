@@ -115,6 +115,10 @@ class _BaseBackend:
     def start(self, port: int = APIPOD_PORT, *args, **kwargs):
         raise NotImplementedError("Implement in subclass")
 
+    def include_router(self, router, prefix: str = "", **kwargs):
+        """Mount a nested APIPod router under *prefix* (FastAPI ``include_router`` semantics)."""
+        raise NotImplementedError("Implement in subclass")
+
     def endpoint(self, path: str = None, *args, **kwargs):
         """
         Add a route to the app. 

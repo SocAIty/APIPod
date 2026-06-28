@@ -103,8 +103,12 @@ def store_chunk(chunk: Any) -> str:
 
 def aggregate_plain(items: list) -> Any:
     """Join text chunks or serialize each item for the /status result."""
-    if items and all(isinstance(i, str) for i in items):
+    if not items:
+        return items
+    if all(isinstance(i, str) for i in items):
         return "".join(items)
+    if all(isinstance(i, (bytes, bytearray)) for i in items):
+        return b"".join(bytes(i) for i in items)
     return [JobResultFactory._serialize_result(i) for i in items]
 
 

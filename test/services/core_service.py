@@ -74,7 +74,12 @@ def register(app):
         astring: str = "master_of_desaster",
         anint: int = 42,
     ):
-        return anyfile3, str, anyfile1.to_base64(), img.to_base64(), anyfiles
+        return {
+            "text": astring,
+            "anyfile1_b64": anyfile1.to_base64() if anyfile1 else None,
+            "img_b64": img.to_base64(),
+            "anyfiles_b64": [item.to_base64() for item in anyfiles],
+        }
 
     # JobProgress + queue lifecycle.
     @app.post(path="/test_job_progress", queue_size=10)

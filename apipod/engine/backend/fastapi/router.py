@@ -17,7 +17,7 @@ from apipod.engine.base_backend import _BaseBackend
 from apipod.engine.queue.queue_mixin import _QueueMixin
 from apipod.engine.backend.fastapi.file_handling_mixin import _fast_api_file_handling_mixin
 from apipod.engine.backend.fastapi.streaming_mixin import _FastAPIStreamingMixin
-from apipod.engine.utils import normalize_name
+from apipod.engine.utils import normalize_name, normalize_mount_prefix
 from apipod.engine.backend.fastapi.exception_handling import _FastAPIExceptionHandler
 from apipod.engine.backend.schema_resolve import wrap_schema_response
 
@@ -83,7 +83,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             )
 
         self.app: FastAPI = app
-        self.prefix = prefix
+        self.prefix = normalize_mount_prefix(prefix)
         self.stream_store = stream_store
 
         # Let the queue produce streaming job output into the stream store so a
@@ -117,6 +117,28 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             if self.stream_store is not None:
                 self.api_route(path="/stream/{job_id}", methods=["GET"])(self.stream_job_sse)
         self.api_route(path="/health", methods=["GET"])(self.get_health)
+
+    def _apply_mount_prefix(self, mount_prefix: str) -> None:
+        """Record the mount prefix used for job hypermedia links."""
+        mount = normalize_mount_prefix(mount_prefix)
+        if mount:
+            self.prefix = mount
+
+    def include_router(
+        self,
+        router: "SocaityFastAPIRouter",
+        prefix: str = "",
+        tags: list | None = None,
+        **kwargs,
+    ) -> None:
+        """Mount another APIPod FastAPI router (mirrors FastAPI ``include_router``)."""
+        if not isinstance(router, SocaityFastAPIRouter):
+            raise TypeError(
+                f"APIPod include_router expects a SocaityFastAPIRouter instance, got {type(router)!r}"
+            )
+        mount = normalize_mount_prefix(prefix)
+        router._apply_mount_prefix(mount)
+        super().include_router(router, prefix=mount, tags=tags, **kwargs)
 
     def get_health(self) -> Response:
         """
@@ -174,6 +196,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         ret_job = JobResultFactory.from_base_job(
             job,
             include_stream_link=self._include_stream_link_for(job.job_function),
+            link_prefix=self.prefix,
         )
 
         if return_format != 'json':
@@ -222,6 +245,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         return JobResultFactory.from_base_job(
             job,
             include_stream_link=include_stream_link,
+            link_prefix=self.prefix,
         )
 
     def endpoint(self, path: str, methods: list[str] | None = None, max_upload_file_size_mb: int = None, queue_size: int = 500, use_queue: bool = None, *args, **kwargs):

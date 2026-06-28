@@ -1,4 +1,5 @@
 import gzip
+import logging
 from datetime import datetime
 from io import BytesIO
 from typing import Any, List, Optional, Union
@@ -6,10 +7,14 @@ from typing import Any, List, Optional, Union
 from pydantic import BaseModel
 
 from apipod.engine.jobs.base_job import JOB_STATUS, BaseJob
+from apipod.engine.jobs.job_progress import JobProgress, JobProgressRunpod
 from apipod.engine.signatures.upload import is_param_media_toolkit_file
 from media_toolkit import IMediaContainer
 from media_toolkit.utils.data_type_utils import is_file_model_dict
 from apipod.common.schemas.media_files import FileModel
+
+
+logger = logging.getLogger(__name__)
 
 
 def _public_status(status: Any) -> Optional[str]:
@@ -60,9 +65,24 @@ class JobResult(BaseModel):
 
 class JobResultFactory:
     @staticmethod
-    def _serialize_result(data: Any) -> Union[FileModel, List[FileModel], list, str, None]:
+    def _is_job_progress(value: Any) -> bool:
+        return isinstance(value, (JobProgress, JobProgressRunpod))
+
+    @staticmethod
+    def _warn_job_progress_ignored(context: str = "response") -> None:
+        logger.warning(
+            "Endpoint returned JobProgress in its %s. JobProgress is input-only and is omitted from the JSON result.",
+            context,
+        )
+
+    @classmethod
+    def _serialize_result(cls, data: Any) -> Union[FileModel, List[FileModel], list, str, None]:
+        if cls._is_job_progress(data):
+            cls._warn_job_progress_ignored()
+            return None
+
         if isinstance(data, IMediaContainer):
-            return data.to_json()
+            return FileModel(**data.to_json())
 
         if is_param_media_toolkit_file(data):
             return FileModel(**data.to_json())
@@ -76,24 +96,47 @@ class JobResultFactory:
             except Exception:
                 pass
 
-        # Pydantic schema responses (e.g. SpeechResponse): dump to a dict and
-        # recurse so nested media files / FileModels serialize correctly too.
         if isinstance(data, BaseModel):
-            return JobResultFactory._serialize_result(data.model_dump())
+            return cls._serialize_result(data.model_dump())
+
+        if isinstance(data, tuple):
+            items = []
+            for index, item in enumerate(data):
+                if cls._is_job_progress(item):
+                    cls._warn_job_progress_ignored(context=f"response[{index}]")
+                    continue
+                items.append(cls._serialize_result(item))
+            return items
 
         if isinstance(data, list):
-            return [JobResultFactory._serialize_result(item) for item in data]
+            items = []
+            for index, item in enumerate(data):
+                if cls._is_job_progress(item):
+                    cls._warn_job_progress_ignored(context=f"response[{index}]")
+                    continue
+                items.append(cls._serialize_result(item))
+            return items
 
         if isinstance(data, dict):
             return {
-                key: JobResultFactory._serialize_result(value)
+                key: cls._serialize_result(value)
                 for key, value in data.items()
             }
 
         return data
 
     @staticmethod
-    def from_base_job(job: BaseJob, *, include_stream_link: bool = False) -> JobResult:
+    def _job_link(link_prefix: str, suffix: str) -> str:
+        prefix = (link_prefix or "").rstrip("/")
+        return f"{prefix}{suffix}" if prefix else suffix
+
+    @staticmethod
+    def from_base_job(
+        job: BaseJob,
+        *,
+        include_stream_link: bool = False,
+        link_prefix: str = "",
+    ) -> JobResult:
         """Map a :class:`BaseJob` to the public :class:`JobResult`."""
         m = job.metrics
         metrics = JobMetrics(
@@ -113,9 +156,13 @@ class JobResultFactory:
             message=job.job_progress.message,
             metrics=metrics,
             links=JobLinks(
-                status=f"/status/{job.id}",
-                cancel=f"/cancel/{job.id}",
-                stream=f"/stream/{job.id}" if include_stream_link else None,
+                status=JobResultFactory._job_link(link_prefix, f"/status/{job.id}"),
+                cancel=JobResultFactory._job_link(link_prefix, f"/cancel/{job.id}"),
+                stream=(
+                    JobResultFactory._job_link(link_prefix, f"/stream/{job.id}")
+                    if include_stream_link
+                    else None
+                ),
             ),
         )
 

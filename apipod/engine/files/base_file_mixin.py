@@ -1,5 +1,6 @@
 import functools
 import inspect
+import json
 from types import UnionType
 from typing import Any, Optional, Union, get_args, get_origin, Callable, List, Type
 
@@ -26,6 +27,63 @@ def _media_type_for_file_model(file_model_cls: Type) -> Type:
         if cls in _FILE_MODEL_MEDIA_TYPES:
             return _FILE_MODEL_MEDIA_TYPES[cls]
     return MediaFile
+
+
+def _file_model_class_from_annotation(annotation: Any) -> Optional[Type[FileModel]]:
+    """Resolve a FileModel subclass from a parameter annotation (also inside unions)."""
+    if inspect.isclass(annotation) and issubclass(annotation, FileModel):
+        return annotation
+    if get_origin(annotation) in (Union, UnionType):
+        for arg in get_args(annotation):
+            if arg is type(None):
+                continue
+            resolved = _file_model_class_from_annotation(arg)
+            if resolved is not None:
+                return resolved
+    return None
+
+
+def _coerce_to_file_model(value: Any, file_model_cls: Type[FileModel]) -> Any:
+    """Parse wire-format FileModel payloads (dict, JSON string) into pydantic models."""
+    if isinstance(value, FileModel):
+        content = value.content
+        if isinstance(content, str) and content.strip().startswith("{"):
+            try:
+                parsed = json.loads(content.strip())
+                if isinstance(parsed, dict) and {"file_name", "content_type", "content"}.issubset(parsed.keys()):
+                    return file_model_cls.model_validate(parsed)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return value
+    if isinstance(value, dict):
+        return file_model_cls.model_validate(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("{"):
+            try:
+                return file_model_cls.model_validate(json.loads(stripped))
+            except (json.JSONDecodeError, ValueError):
+                pass
+    return value
+
+
+def _is_media_list_type(target_type: Any) -> bool:
+    """True for ``MediaList`` and parameterized forms like ``MediaList[ImageFile]``."""
+    if target_type is MediaList:
+        return True
+    return get_origin(target_type) is MediaList
+
+
+def _coerce_wire_list(value: Any) -> Any:
+    """Parse JSON list strings from multipart form fields."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("["):
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+    return value
 
 
 def _parse_file_model_value(value: Any) -> Any:
@@ -209,16 +267,22 @@ class _BaseFileHandlingMixin:
             return param_value
 
         try:
+            file_model_cls = _file_model_class_from_annotation(annotation)
+            if file_model_cls is not None:
+                coerced = _coerce_to_file_model(param_value, file_model_cls)
+                if isinstance(coerced, FileModel):
+                    return _parse_file_model_value(coerced)
+
             # Determine target type for conversion
             target_type = self._get_media_target_type(annotation)
 
-            if target_type == MediaList:
+            if _is_media_list_type(target_type):
                 return MediaList(
                     read_system_files=False,
                     download_files=True,
                     use_temp_file=True,
-                    temp_dir=None
-                ).from_any(param_value)
+                    temp_dir=None,
+                ).from_any(_coerce_wire_list(param_value))
 
             # Attempt conversion
             m = media_from_any(

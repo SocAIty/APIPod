@@ -48,12 +48,11 @@ The test: Every changed line should trace directly to the user's request.
 - Avoid local imports
 - Do not write "deprecated" or backward compability code.
 - Update the README.md if there's user related important changes. Update TECHNICAL_README.md for architectural, or project maintainer important changes. Keep the .md update brief use technical correct terms.
-- Write flake8 formatted code with "flake8.args": [
-        "--max-line-length=120",
-        "--ignore=E203,W503,E501,E261,W293"
-    ]
-} 
-- Avoid using direct cmd python calls and pip installs. Work with the local venv if necessary. Always ask if necessary.
+- Write ruff formatted code with ignores E203, W503, W501, W293, W291 and lineLenght 120.
+- Avoid using direct cmd python calls and pip installs.
+- Dev tools are make, ruff, mypy, pytest.
+- Always ask before writing a test file.
+- When executing python code, always use the local venv of the corresponding project.
 
 ## 5. Reason and thinking style
 Do thinking and reasoning like a smart caveman.

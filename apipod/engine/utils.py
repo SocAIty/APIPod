@@ -84,3 +84,11 @@ def normalize_name(name: str, preserve_paths: bool = False) -> str:
     if len(name) == 0:
         return "no_name"
     return name
+
+
+def normalize_mount_prefix(prefix: str) -> str:
+    """Normalize a router mount prefix to a leading-slash path segment."""
+    prefix = (prefix or "").strip()
+    if not prefix:
+        return ""
+    return prefix if prefix.startswith("/") else f"/{prefix}"

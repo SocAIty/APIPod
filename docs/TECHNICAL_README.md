@@ -167,5 +167,5 @@ Run `pytest`. Two primitives keep tests DRY: `build_service(register, **config)`
 
 The fastSDK end-to-end tests skip automatically when the installed fastsdk lacks the `connect` API (e.g. a local in-progress build); CI installs one that has it. Pytest config (`pythonpath` in `pyproject.toml`) resolves `import apipod` to the in-repo source and the `conftest`/`services` helpers by name, so no `sys.path` shims are needed and each file is also runnable directly from an IDE via its `__main__` block.
 
-CI (`.github/workflows/publish.yml`) runs the `test` job on every push and pull request (installing `.[test]`, which includes fastSDK). The `publish` job `needs: test`, so the patch version bump and PyPI upload happen only on a push to `main` after tests pass. flake8 and mypy run as soft checks (`continue-on-error`): they surface warnings without gating the build.
+CI (`.github/workflows/publish.yml`) runs the `test` job on every push and pull request (installing `.[test]`, which includes fastSDK). The `publish` job `needs: test`, so the patch version bump and PyPI upload happen only on a push to `main` after tests pass. ruff and mypy run as soft checks (`continue-on-error`): they surface warnings without gating the build.
 

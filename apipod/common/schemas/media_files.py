@@ -1,5 +1,6 @@
 from pydantic import BaseModel, AnyUrl, model_validator
 from typing import Union, Optional
+import json
 
 
 class FileModel(BaseModel):
@@ -18,7 +19,15 @@ class FileModel(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_input(cls, value):
-        if isinstance(value, (str, bytes)):
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("{"):
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except (json.JSONDecodeError, TypeError):
+                    pass
             return {"file_name": "file", "content_type": "application/octet-stream", "content": value}
         if isinstance(value, FileModel):
             # Re-validate a (sibling/parent) FileModel against the concrete field type.

@@ -22,7 +22,7 @@ from apipod.engine.backend.schema_resolve import (
 )
 from apipod.engine.streaming.stream_serializer import as_sync_iter, encode_chunk, is_streaming_result
 
-from apipod.engine.utils import normalize_name
+from apipod.engine.utils import normalize_name, normalize_mount_prefix
 from apipod.common.settings import APIPOD_PORT
 from media_toolkit import AudioFile, VideoFile
 
@@ -32,17 +32,48 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
     Adds routing functionality for the runpod serverless framework.
     Provides enhanced file handling and conversion capabilities.
     """
-    def __init__(self, title: str = "APIPod for ", summary: str = None, simulate: bool = False, *args, **kwargs):
+    def __init__(self, title: str = "APIPod for ", summary: str = None, simulate: bool = False, prefix: str = "", *args, **kwargs):
         super().__init__(title=title, summary=summary, *args, **kwargs)
 
         # When True, start() runs RunPod's local API emulator instead of the real
         # serverless worker (set by APIPod(simulate="serverless-runpod", direct=True)).
         self.simulate = simulate
+        self.prefix = normalize_mount_prefix(prefix)
         self.routes = {}  # routes are organized like {"ROUTE_NAME": "ROUTE_FUNCTION"}
         self._endpoint_plans: dict[str, EndpointExecutionPlan] = {}
         self._endpoint_source_funcs: dict[str, Callable] = {}
 
         self.add_standard_routes()
+
+    def _apply_mount_prefix(self, mount_prefix: str) -> None:
+        mount = normalize_mount_prefix(mount_prefix)
+        if mount:
+            self.prefix = mount
+
+    def include_router(
+        self,
+        router: "SocaityRunpodRouter",
+        prefix: str = "",
+        **kwargs,
+    ) -> None:
+        """Mount another APIPod RunPod router under *prefix* (path prefix only)."""
+        del kwargs
+        if not isinstance(router, SocaityRunpodRouter):
+            raise TypeError(
+                f"APIPod include_router expects a SocaityRunpodRouter instance, got {type(router)!r}"
+            )
+        mount = normalize_mount_prefix(prefix)
+        router._apply_mount_prefix(mount)
+        head = mount.strip("/")
+        for path, route in router.routes.items():
+            if path == "openapi.json":
+                continue
+            prefixed = f"{head}/{path.strip('/')}" if head else path.strip("/")
+            self.routes[prefixed] = route
+            if path in router._endpoint_plans:
+                self._endpoint_plans[prefixed] = router._endpoint_plans[path]
+            if path in router._endpoint_source_funcs:
+                self._endpoint_source_funcs[prefixed] = router._endpoint_source_funcs[path]
 
     def add_standard_routes(self):
         self.endpoint(path="openapi.json")(self.get_openapi_schema)
