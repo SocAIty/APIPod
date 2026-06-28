@@ -23,8 +23,7 @@ apipod/
 │   ├── settings.py         # Env-driven config (APIPOD_SIMULATE / _DIRECT / _COMPUTE / _PROVIDER, cert, host, port)
 │   ├── constants.py        # Enums: COMPUTE, PROVIDER, SERVER_HEALTH
 │   └── schemas/
-│       ├── schemas.py      # Standardized request/response models (OpenAI-compatible shapes)
-│       └── media_files.py  # FileModel + typed variants: pydantic mirrors of media-toolkit files
+│       └── __init__.py     # Re-exports from socaity-schemas (OpenAI-compatible request/response + FileModel)
 ├── engine/
 │   ├── base_backend.py     # Shared backend base (title, version, health)
 │   ├── endpoint_config.py  # EndpointExecutionPlan + configurator (how to register an endpoint)
@@ -92,7 +91,7 @@ On the way out, `JobResultFactory._serialize_result` converts returned `MediaFil
 
 ### Standardized schemas
 
-`common/schemas/schemas.py` defines request/response pairs for: chat completion, text completion, embeddings, image generation, video generation, transcription, speech (TTS), voice creation, voice conversion, 3D generation, vision, and multimodal embeddings. `model` is optional on every request, since an APIPod service typically serves exactly one model. The audio API is split per use case, mirroring OpenAI: `TranscriptionRequest` (STT), `SpeechRequest` (TTS, with `voice` as a named voice or a cloning reference file), `CreateVoiceRequest` (voice cloning → embedding) and `VoiceConversionRequest` (voice2voice).
+`socaity-schemas` (re-exported at ``apipod.common.schemas``) defines request/response pairs for: chat completion, text completion, embeddings, image generation, video generation, transcription, speech (TTS), voice creation, voice conversion, 3D generation, vision, and multimodal embeddings. `model` is optional on every request, since an APIPod service typically serves exactly one model. The audio API is split per use case, mirroring OpenAI: `TranscriptionRequest` (STT), `SpeechRequest` (TTS, with `voice` as a named voice or a cloning reference file), `CreateVoiceRequest` (voice cloning → embedding) and `VoiceConversionRequest` (voice2voice).
 
 `SCHEMA_REGISTRY` in `engine/schema_extension/schema_mixin.py` is the single source of truth: it maps each request schema to a `SchemaEndpointSpec` (response model, tag). Everything else derives from it — `engine/signatures/policies.py` builds `SUPPORTED_REQUEST_SCHEMAS` from the registry keys (schema-annotated parameters are read from the JSON body while plain parameters stay form-encoded), and both routers detect schema endpoints with `get_schema_binding`, which finds the schema-typed parameter by annotation regardless of its name (subclasses of registered schemas are also detected, so services can extend a schema with custom fields). Schema endpoints may not declare additional user parameters; put extra inputs on the schema or a schema subclass.
 

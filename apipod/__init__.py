@@ -1,7 +1,8 @@
 from apipod.api import APIPod
 from apipod.engine.jobs.base_job import BaseJob, LocalJob
 from apipod.engine.jobs.job_progress import JobProgress
-from apipod.engine.jobs.job_result import FileModel, JobLinks, JobMetrics, JobResult
+from socaity_schemas import FileModel
+from apipod.engine.jobs.job_result import JobLinks, JobMetrics, JobResult
 from apipod.engine.streaming import StreamStore, LocalStreamStore, StreamProducer
 from media_toolkit import MediaFile, ImageFile, AudioFile, VideoFile, MediaList, MediaDict
 from apipod.common import constants

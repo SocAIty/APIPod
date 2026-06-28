@@ -11,7 +11,7 @@ from apipod.engine.jobs.job_progress import JobProgress, JobProgressRunpod
 from apipod.engine.signatures.upload import is_param_media_toolkit_file
 from media_toolkit import IMediaContainer
 from media_toolkit.utils.data_type_utils import is_file_model_dict
-from apipod.common.schemas.media_files import FileModel
+from socaity_schemas import FileModel
 
 
 logger = logging.getLogger(__name__)

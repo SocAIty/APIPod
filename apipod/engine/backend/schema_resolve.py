@@ -30,7 +30,36 @@ from pydantic import BaseModel, Field, create_model
 from pydantic.json_schema import SkipJsonSchema
 from media_toolkit import MediaFile
 
-from apipod.common.schemas import *
+from socaity_schemas import (
+    ChatCompletionChunk,
+    ChatCompletionChoice,
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatDelta,
+    ChatStreamChoice,
+    CompletionRequest,
+    CompletionResponse,
+    CreateVoiceRequest,
+    EmbeddingRequest,
+    EmbeddingResponse,
+    Generation3DRequest,
+    Generation3DResponse,
+    ImageGenerationRequest,
+    ImageGenerationResponse,
+    MultimodalEmbeddingRequest,
+    MultimodalEmbeddingResponse,
+    SpeechRequest,
+    SpeechResponse,
+    TranscriptionRequest,
+    TranscriptionResponse,
+    VideoGenerationRequest,
+    VideoGenerationResponse,
+    VisionRequest,
+    VisionResponse,
+    VoiceConversionRequest,
+    VoiceConversionResponse,
+    VoiceResponse,
+)
 from apipod.engine.files.base_file_mixin import parse_schema_media_fields
 from apipod.engine.signatures.analysis import is_injected_progress_param
 

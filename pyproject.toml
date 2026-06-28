@@ -17,6 +17,7 @@ dependencies = [
     "fastapi",
     'python-multipart>=0.0.20',
     "media-toolkit>=0.02.22",
+    "socaity-schemas>=0.0.1",
     "jinja2",
     "toml"
 ]
@@ -42,11 +43,8 @@ Homepage = "https://www.socaity.ai"
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
-# Make `import apipod` resolve to the in-repo source (not an installed copy) and
-# let test modules import the shared `conftest` helpers and `services` package by
-# name. The sibling fastsdk entry is used in local dev when the repo is checked
-# out next to apipod; it is silently ignored in CI where fastsdk comes from pip.
-pythonpath = [".", "test", "../fastsdk"]
+# Resolve in-repo apipod and sibling packages in local dev (CI installs from pip).
+pythonpath = [".", "test", "../fastsdk", "../socaity-schemas"]
 
 [tool.ruff]
 line-length = 120

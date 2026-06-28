@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from media_toolkit import media_from_any, MediaFile, MediaList, MediaDict, ImageFile, AudioFile, VideoFile
 from apipod.engine.signatures.upload import is_param_media_toolkit_file
-from apipod.common.schemas.media_files import FileModel, ImageFileModel, AudioFileModel, VideoFileModel
+from socaity_schemas import AudioFileModel, FileModel, ImageFileModel, VideoFileModel
 from apipod.common.exceptions import FileUploadException
 
 
