@@ -234,5 +234,4 @@ client.text_to_speech("what a time to be alive")
 
 <p align="center">
   Made with ❤️ by <a href="https://www.socaity.ai?utm_source=github&utm_content=apipod-20-29-06-2026">SocAIty</a>
-  <p align="center">Remember: Existence is pain to a Meseex, but task completion brings them joy!</p>
 </p>
