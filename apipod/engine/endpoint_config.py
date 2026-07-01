@@ -8,6 +8,9 @@ from typing import Any, Callable
 from apipod.engine.backend.schema_resolve import SchemaBinding, get_schema_binding
 from apipod.engine.signatures.analysis import is_streaming_endpoint
 
+# Set on dynamically built gateway handlers when registry metadata marks streaming.
+GATEWAY_SUPPORTS_STREAMING_ATTR = "__gateway_supports_streaming__"
+
 
 @dataclass(frozen=True)
 class EndpointExecutionPlan:
@@ -65,5 +68,8 @@ def build_plan(
         route_args=route_args,
         route_kwargs=route_kwargs if route_kwargs is not None else {},
         schema_binding=schema_binding,
-        is_streaming=is_streaming_endpoint(func, schema_binding),
+        is_streaming=(
+            is_streaming_endpoint(func, schema_binding)
+            or bool(getattr(func, GATEWAY_SUPPORTS_STREAMING_ATTR, False))
+        ),
     )
