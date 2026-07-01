@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from apipod.common.settings import APIPOD_PORT, APIPOD_HOST
 from apipod.common.constants import SERVER_HEALTH
 from apipod.engine.jobs.job_result import JobResultFactory, JobResult
+from apipod.engine.queue.job_queue_interface import JobQueueInterface
 from apipod.engine.endpoint_config import build_plan, EndpointExecutionPlan
 from apipod.engine.streaming.stream_serializer import build_stream_producer
 from apipod.engine.base_backend import _BaseBackend
@@ -189,15 +190,29 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         if self.job_queue is None:
             return JobResultFactory.job_not_found(job_id)
 
-        job = self.job_queue.get_job(job_id)
-        if job is None:
-            return JobResultFactory.job_not_found(job_id)
+        # Remote queues (e.g. gateway RedisJobQueue) override get_job_result to
+        # build JobResult from ServiceJob records that have no job_function.
+        queue_get_job_result = getattr(type(self.job_queue), "get_job_result", None)
+        if queue_get_job_result is not JobQueueInterface.get_job_result:
+            ret_job = self.job_queue.get_job_result(job_id)
+        else:
+            job = self.job_queue.get_job(job_id)
+            if job is None:
+                return JobResultFactory.job_not_found(job_id)
 
-        ret_job = JobResultFactory.from_base_job(
-            job,
-            include_stream_link=self._include_stream_link_for(job.job_function),
-            link_prefix=self.prefix,
-        )
+            job_function = getattr(job, "job_function", None)
+            ret_job = JobResultFactory.from_base_job(
+                job,
+                include_stream_link=(
+                    self._include_stream_link_for(job_function)
+                    if job_function is not None
+                    else False
+                ),
+                link_prefix=self.prefix,
+            )
+
+        if ret_job is None:
+            return JobResultFactory.job_not_found(job_id)
 
         if return_format != 'json':
             ret_job = JobResultFactory.gzip_job_result(ret_job)
