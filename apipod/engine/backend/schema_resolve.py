@@ -62,6 +62,7 @@ from socaity_schemas import (
 )
 from apipod.engine.files.base_file_mixin import parse_schema_media_fields
 from apipod.engine.signatures.analysis import is_injected_progress_param
+from apipod.engine.signatures.policies import FastAPISignaturePolicies
 
 
 @dataclass(frozen=True)
@@ -229,7 +230,9 @@ def _validate_schema_endpoint_signature(func: Callable, binding: SchemaBinding) 
     extra = [
         param.name
         for param in inspect.signature(func).parameters.values()
-        if param.name != binding.param_name and not _is_injected_param(param)
+        if param.name != binding.param_name
+        and not _is_injected_param(param)
+        and not FastAPISignaturePolicies.is_fastapi_dependency(param)
     ]
     if extra:
         raise TypeError(
