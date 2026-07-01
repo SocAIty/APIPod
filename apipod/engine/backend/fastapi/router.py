@@ -21,6 +21,7 @@ from apipod.engine.backend.fastapi.streaming_mixin import _FastAPIStreamingMixin
 from apipod.engine.utils import normalize_name, normalize_mount_prefix
 from apipod.engine.backend.fastapi.exception_handling import _FastAPIExceptionHandler
 from apipod.engine.backend.schema_resolve import wrap_schema_response
+from apipod.engine.jobs.enqueue_payload import is_enqueue_payload
 
 
 class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_handling_mixin, _FastAPIStreamingMixin, _FastAPIExceptionHandler):
@@ -338,7 +339,9 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         - direct (no queue): a :class:`StreamingResponse` is returned to the client.
 
         Non-streaming schema results are wrapped into the response model; all
-        results are then serialized (media files -> JSON).
+        results are then serialized (media files -> JSON). Handlers that return
+        :class:`~apipod.engine.jobs.enqueue_payload.EnqueuePayload` (job
+        submission metadata for remote queues) are passed through unchanged.
         """
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
@@ -347,6 +350,9 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             producer = build_stream_producer(result, plan.schema_binding)
             if producer is not None:
                 return producer if queued else self._streaming_response_from_producer(producer)
+
+            if is_enqueue_payload(result):
+                return result
 
             binding = plan.schema_binding
             if binding is not None:
