@@ -70,6 +70,9 @@ class BaseJob:
         self.error: Optional[str] = None
         self.job_progress = JobProgress()
         self.metrics = JobMetrics()
+        # True when the job's output may be consumed via GET /stream/{job_id}.
+        # Set at enqueue time by the queue; drives the ``links.stream`` hint.
+        self.supports_streaming: bool = False
 
 
 class LocalJob(BaseJob):
