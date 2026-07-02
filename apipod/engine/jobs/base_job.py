@@ -1,19 +1,42 @@
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
-from uuid import uuid4
 from enum import Enum
+from typing import Any, FrozenSet, Optional
+from uuid import uuid4
 
 from apipod.engine.jobs.job_progress import JobProgress
 
 
 class JOB_STATUS(Enum):
-    """Lifecycle states of a job. The value is the public API status string."""
+    """Internal lifecycle states for APIPod's in-process job queue.
+
+    Values are lowercase strings suitable for :class:`JobResult.status` when
+    APIPod runs standalone.
+    """
+
     QUEUED = "queued"
     PROCESSING = "processing"
     STREAMING = "streaming"
     FINISHED = "finished"
     FAILED = "failed"
     TIMEOUT = "timeout"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in {
+            JOB_STATUS.FINISHED,
+            JOB_STATUS.FAILED,
+            JOB_STATUS.TIMEOUT,
+        }
+
+
+# Statuses where GET /stream may attach before the local stream store opens.
+STREAM_WAIT_STATUSES: FrozenSet[str] = frozenset(
+    {
+        JOB_STATUS.QUEUED.value,
+        JOB_STATUS.PROCESSING.value,
+        JOB_STATUS.STREAMING.value,
+    }
+)
 
 
 class JobMetrics:

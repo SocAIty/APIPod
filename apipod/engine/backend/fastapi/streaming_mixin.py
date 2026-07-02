@@ -31,6 +31,7 @@ from fastapi.exceptions import HTTPException
 from fastapi.responses import StreamingResponse
 
 from apipod.engine.endpoint_config import EndpointExecutionPlan
+from apipod.engine.jobs.base_job import JOB_STATUS, STREAM_WAIT_STATUSES
 from apipod.engine.streaming.stream_producer import StreamProducer
 
 
@@ -135,9 +136,13 @@ class _FastAPIStreamingMixin:
         if job_data is None and not stream_open:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job '{job_id}' not found.")
 
-        # Allow any not-yet-finished state; read_chunks waits for the producer.
-        st = ((job_data.get("status") if job_data else "") or "").lower()
-        if not stream_open and st not in {"queued", "processing", "streaming"}:
+        # Allow pre-stream lifecycle states; read_chunks waits for the producer.
+        raw_status = (job_data.get("status") if job_data else "") or ""
+        if isinstance(raw_status, JOB_STATUS):
+            st = raw_status.value
+        else:
+            st = str(raw_status).lower()
+        if not stream_open and st not in STREAM_WAIT_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Job '{job_id}' is not streaming (status: {st or 'unknown'}).",
