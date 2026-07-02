@@ -21,7 +21,7 @@ def _return_type_includes_iterator(return_type) -> bool:
     return inspect.isclass(resolved) and issubclass(resolved, (Iterator, AsyncIterator))
 
 
-def is_streaming_endpoint(func: Callable, schema_binding: None) -> bool:
+def is_streaming_endpoint(func: Callable, schema_binding=None) -> bool:
     """Backend-neutral: True when *func* can produce a streaming response.
 
     Detection order:
@@ -29,6 +29,8 @@ def is_streaming_endpoint(func: Callable, schema_binding: None) -> bool:
     - return annotation contains ``Iterator`` / ``AsyncIterator`` (incl. inside a ``Union``);
     - schema endpoint whose request model has a ``stream`` field and the function body
       returns a generator (AST: ``yield``, generator expression, or under ``if request.stream``).
+
+    ``schema_binding`` is resolved from *func* when not provided by the caller.
     """
     target = inspect.unwrap(func)
     if inspect.isgeneratorfunction(target) or inspect.isasyncgenfunction(target):
@@ -39,6 +41,16 @@ def is_streaming_endpoint(func: Callable, schema_binding: None) -> bool:
         return_type = None
     if _return_type_includes_iterator(return_type):
         return True
+
+    if schema_binding is None:
+        # Local import: schema_resolve depends on backend modules that in turn
+        # use this analysis module.
+        from apipod.engine.backend.schema_resolve import get_schema_binding
+
+        try:
+            schema_binding = get_schema_binding(func)
+        except Exception:
+            schema_binding = None
 
     if schema_binding is not None and "stream" in schema_binding.request_model.model_fields:
         return ast_suggests_request_stream(target)
