@@ -25,9 +25,12 @@ def input_yes_no(question: str, default: bool = True) -> bool:
 def select_base_image(manager: DeploymentManager, config_data: dict) -> str:
     """Interactive base image selection process."""
     recommended_image = manager.recommend_image(config_data)
-    print(f"Detected configuration: Python {config_data.get('python_version')}, "
-          f"PyTorch: {config_data.get('pytorch')}, TensorFlow: {config_data.get('tensorflow')}, "
-          f"ONNX: {config_data.get('onnx')}")
+    print(
+        f"Detected configuration: profile={config_data.get('profile')}, "
+        f"Python {config_data.get('python_version')}, "
+        f"PyTorch: {config_data.get('pytorch')}, TensorFlow: {config_data.get('tensorflow')}, "
+        f"ONNX: {config_data.get('onnx')}"
+    )
     print(f"Recommended Base Image: {recommended_image}")
 
     if input_yes_no("Is this correct?"):
