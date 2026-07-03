@@ -20,6 +20,7 @@ from apipod.engine.backend.fastapi.streaming_mixin import _FastAPIStreamingMixin
 from apipod.engine.utils import normalize_name, normalize_mount_prefix
 from apipod.engine.backend.fastapi.exception_handling import _FastAPIExceptionHandler
 from apipod.engine.backend.schema_resolve import wrap_schema_response
+from apipod.engine.jobs.enqueue_payload import is_enqueue_payload
 
 
 class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_handling_mixin, _FastAPIStreamingMixin, _FastAPIExceptionHandler):
@@ -189,62 +190,43 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         if self.job_queue is None:
             return JobResultFactory.job_not_found(job_id)
 
-        job = self.job_queue.get_job(job_id)
-        if job is None:
+        ret_job = self.job_queue.get_job_result(job_id, link_prefix=self.prefix)
+        if ret_job is None:
             return JobResultFactory.job_not_found(job_id)
-
-        ret_job = JobResultFactory.from_base_job(
-            job,
-            include_stream_link=self._include_stream_link_for(job.job_function),
-            link_prefix=self.prefix,
-        )
 
         if return_format != 'json':
             ret_job = JobResultFactory.gzip_job_result(ret_job)
 
         return ret_job
 
-    def _include_stream_link_for(self, job_function: Callable) -> bool:
-        """True when the endpoint plan marks the job function as streaming."""
-        if self.stream_store is None:
-            return False
-        plan = self._endpoint_plans.get(f"{job_function.__module__}.{job_function.__qualname__}")
-        return plan is not None and plan.is_streaming
-
     def post_cancel_job(self, job_id: str) -> dict:
-        """Cancel a background job (gateway / orchestrator integration)."""
+        """Cancel a background job via the queue port."""
         job_id = job_id.strip().strip('"').strip("'").strip("?").strip("#")
         if self.job_queue is None:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Job queue not configured.")
 
-        cancel_fn = getattr(self.job_queue, "cancel_gateway_job", None)
-        if callable(cancel_fn):
-            return cancel_fn(job_id)
-
         try:
-            self.job_queue.cancel_job(job_id)
+            summary = self.job_queue.cancel_job(job_id)
         except NotImplementedError:
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
                 detail="Cancellation is not supported for this job queue.",
             ) from None
-        return {"id": job_id, "status": "cancelled", "message": "Job cancelled."}
+        return summary or {"id": job_id, "status": "cancelled", "message": "Job cancelled."}
 
     def add_job(self, func: Callable, job_params: dict) -> JobResult:
         """Enqueue a task and return a :class:`JobResult` with endpoint-aware links."""
         if self.job_queue is None:
             raise ValueError("Job Queue is not initialized. Cannot add job.")
-        job = self.job_queue._add_job(job_function=func, job_params=job_params)
-        
-        # check if the job result will include the stream option
-        include_stream_link = False
-        if self.stream_store is not None:
-            plan = self._endpoint_plans.get(f"{func.__module__}.{func.__qualname__}")
-            include_stream_link = plan is not None and plan.is_streaming
 
-        return JobResultFactory.from_base_job(
-            job,
-            include_stream_link=include_stream_link,
+        plan = self._endpoint_plans.get(f"{func.__module__}.{func.__qualname__}")
+        supports_streaming = (
+            self.stream_store is not None and plan is not None and plan.is_streaming
+        )
+        return self.job_queue.add_job(
+            job_function=func,
+            job_params=job_params,
+            supports_streaming=supports_streaming,
             link_prefix=self.prefix,
         )
 
@@ -323,7 +305,9 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         - direct (no queue): a :class:`StreamingResponse` is returned to the client.
 
         Non-streaming schema results are wrapped into the response model; all
-        results are then serialized (media files -> JSON).
+        results are then serialized (media files -> JSON). Handlers that return
+        :class:`~apipod.engine.jobs.enqueue_payload.EnqueuePayload` (job
+        submission metadata for remote queues) are passed through unchanged.
         """
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
@@ -332,6 +316,9 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             producer = build_stream_producer(result, plan.schema_binding)
             if producer is not None:
                 return producer if queued else self._streaming_response_from_producer(producer)
+
+            if is_enqueue_payload(result):
+                return result
 
             binding = plan.schema_binding
             if binding is not None:
