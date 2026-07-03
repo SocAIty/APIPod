@@ -3,24 +3,27 @@ import inspect
 import threading
 import logging
 from contextlib import asynccontextmanager
-from typing import Union, Callable, get_type_hints, Generator, AsyncGenerator, Iterator, AsyncIterator
-from fastapi import APIRouter, FastAPI, Request, Response, status
+from typing import Union, Callable
+from fastapi import APIRouter, FastAPI, Response, status
 from fastapi.exceptions import HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from apipod.common.settings import APIPOD_PORT, APIPOD_HOST
 from apipod.common.constants import SERVER_HEALTH
 from apipod.engine.jobs.job_result import JobResultFactory, JobResult
-from apipod.engine.endpoint_config import FastApiEndpointConfigurator, EndpointExecutionPlan
+from apipod.engine.endpoint_config import build_plan, EndpointExecutionPlan
+from apipod.engine.streaming.stream_serializer import build_stream_producer
 from apipod.engine.base_backend import _BaseBackend
 from apipod.engine.queue.queue_mixin import _QueueMixin
 from apipod.engine.backend.fastapi.file_handling_mixin import _fast_api_file_handling_mixin
-from apipod.engine.utils import normalize_name
+from apipod.engine.backend.fastapi.streaming_mixin import _FastAPIStreamingMixin
+from apipod.engine.utils import normalize_name, normalize_mount_prefix
 from apipod.engine.backend.fastapi.exception_handling import _FastAPIExceptionHandler
-from apipod.engine.backend.fastapi.llm_mixin import _FastApiLlmMixin
+from apipod.engine.backend.schema_resolve import wrap_schema_response
+from apipod.engine.jobs.enqueue_payload import is_enqueue_payload
 
 
-class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_handling_mixin, _FastAPIExceptionHandler, _FastApiLlmMixin):
+class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_handling_mixin, _FastAPIStreamingMixin, _FastAPIExceptionHandler):
     """
     FastAPI router extension that adds support for task endpoints.
 
@@ -36,7 +39,6 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             prefix: str = "",  # "/api",
             max_upload_file_size_mb: float = None,
             job_queue=None,
-            lifespan=None,
             *args,
             **kwargs):
         """
@@ -49,39 +51,29 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             prefix: The API route prefix
             max_upload_file_size_mb: Maximum file size in MB for uploads
             job_queue: Optional custom JobQueue implementation
-            lifespan: Optional async context manager for custom startup/shutdown logic
             args: Additional arguments
-            kwargs: May include ``stream_store`` (SSE backend for GET /stream/{job_id}) and
-                ``gateway_stream_url_prefix`` for absolute stream URLs in JobResult, plus
-                additional keyword arguments for parent classes.
+            kwargs: May include ``stream_store`` (SSE backend for GET /stream/{job_id}),
+                plus additional keyword arguments for parent classes.
         """
-        # Extract user-provided lifespan (explicit param or kwarg) before parent init
-        user_lifespan = lifespan or kwargs.pop('lifespan', None)
         stream_store = kwargs.pop("stream_store", None)
-        gateway_stream_url_prefix = kwargs.pop("gateway_stream_url_prefix", "")
 
         # Initialize parent classes
         api_router_params = inspect.signature(APIRouter.__init__).parameters
         api_router_kwargs = {k: kwargs.get(k) for k in api_router_params if k in kwargs}
-        api_router_kwargs.pop('lifespan', None)  # handled via composed lifespan below
-
+     
         APIRouter.__init__(self, **api_router_kwargs)
         _BaseBackend.__init__(self, title=title, summary=summary, *args, **kwargs)
         _QueueMixin.__init__(self, job_queue=job_queue, *args, **kwargs)
         _fast_api_file_handling_mixin.__init__(self, max_upload_file_size_mb=max_upload_file_size_mb, *args, **kwargs)
-        _FastApiLlmMixin.__init__(self)
 
         self.status = SERVER_HEALTH.INITIALIZING
 
-        # Registry for functions that workers can execute. Keys are function names.
-        self._job_func_registry: dict = {}
+        # Queued endpoint plans keyed by worker ``__name__`` (see ``_create_task_endpoint_decorator``).
+        self._endpoint_plans: dict[str, EndpointExecutionPlan] = {}
         # Stop event and thread handle for in-process worker (dev mode)
         self._worker_stop_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
         self._logger = logging.getLogger(__name__)
-
-        # Build a composed lifespan that merges internal worker hooks with the user-provided lifespan
-        combined_lifespan = self._build_lifespan(user_lifespan)
 
         # Create or use provided FastAPI app
         if app is None:
@@ -89,19 +81,20 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
                 title=self.title,
                 summary=self.summary,
                 contact={"name": "SocAIty", "url": "https://www.socaity.ai"},
-                lifespan=combined_lifespan,
             )
-        else:
-            # Existing app: replace its lifespan with our composed version
-            app.router.lifespan_context = combined_lifespan
 
         self.app: FastAPI = app
-        self.prefix = prefix
+        self.prefix = normalize_mount_prefix(prefix)
         self.stream_store = stream_store
-        self.gateway_stream_url_prefix = gateway_stream_url_prefix
-        self.add_standard_routes()
 
-        self._endpoint_configurator = FastApiEndpointConfigurator(self)
+        # Let the queue produce streaming job output into the stream store so a
+        # client can consume it via GET /stream/{job_id} (serverless emulation).
+        if self.job_queue is not None and self.stream_store is not None:
+            set_store = getattr(self.job_queue, "set_stream_store", None)
+            if callable(set_store):
+                set_store(self.stream_store)
+
+        self.add_standard_routes()
 
         # Exception handling
         _FastAPIExceptionHandler.__init__(self)
@@ -112,67 +105,6 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         # Save original OpenAPI function and replace it
         self._orig_openapi_func = self.app.openapi
         self.app.openapi = self.custom_openapi
-
-    # ------------------------------------------------------------------
-    # Lifespan & worker lifecycle
-    # ------------------------------------------------------------------
-
-    def _build_lifespan(self, user_lifespan=None):
-        """
-        Build a composed lifespan context manager that runs:
-        1. Internal worker startup
-        2. User-provided lifespan (if any)
-        3. Internal worker shutdown on exit
-        """
-        router_self = self  # capture for closure
-
-        @asynccontextmanager
-        async def _combined_lifespan(app):
-            router_self._start_background_worker()
-            try:
-                if user_lifespan:
-                    async with user_lifespan(app):
-                        yield
-                else:
-                    yield
-            finally:
-                router_self._stop_background_worker()
-
-        return _combined_lifespan
-
-    def _start_background_worker(self):
-        """Start the in-process job queue worker in a daemon thread (dev convenience)."""
-        try:
-            if self.job_queue and hasattr(self.job_queue, "start_worker"):
-                def _run():
-                    try:
-                        self.job_queue.start_worker(
-                            func_registry=self._job_func_registry,
-                            worker_name="api-worker",
-                            stop_event=self._worker_stop_event,
-                        )
-                    except Exception:
-                        self._logger.exception("Worker thread exited with exception")
-
-                thread = threading.Thread(target=_run, daemon=True)
-                thread.start()
-                self._worker_thread = thread
-        except Exception:
-            self._logger.exception("Failed to start in-process worker on startup")
-
-    def _stop_background_worker(self):
-        """Signal the background worker to stop and shut down the job queue."""
-        try:
-            self._worker_stop_event.set()
-        except Exception:
-            pass
-
-        if self.job_queue and hasattr(self.job_queue, "shutdown"):
-            try:
-                self.job_queue.shutdown()
-            except Exception:
-                self._logger.exception("Error shutting down job queue")
-
     # ------------------------------------------------------------------
     # Standard routes
     # ------------------------------------------------------------------
@@ -186,6 +118,28 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             if self.stream_store is not None:
                 self.api_route(path="/stream/{job_id}", methods=["GET"])(self.stream_job_sse)
         self.api_route(path="/health", methods=["GET"])(self.get_health)
+
+    def _apply_mount_prefix(self, mount_prefix: str) -> None:
+        """Record the mount prefix used for job hypermedia links."""
+        mount = normalize_mount_prefix(mount_prefix)
+        if mount:
+            self.prefix = mount
+
+    def include_router(
+        self,
+        router: "SocaityFastAPIRouter",
+        prefix: str = "",
+        tags: list | None = None,
+        **kwargs,
+    ) -> None:
+        """Mount another APIPod FastAPI router (mirrors FastAPI ``include_router``)."""
+        if not isinstance(router, SocaityFastAPIRouter):
+            raise TypeError(
+                f"APIPod include_router expects a SocaityFastAPIRouter instance, got {type(router)!r}"
+            )
+        mount = normalize_mount_prefix(prefix)
+        router._apply_mount_prefix(mount)
+        super().include_router(router, prefix=mount, tags=tags, **kwargs)
 
     def get_health(self) -> Response:
         """
@@ -207,7 +161,16 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         if not self.app.openapi_schema:
             self._orig_openapi_func()
 
-        self.app.openapi_schema["info"]["apipod"] = self.version
+        compute = "dedicated"
+        if self.job_queue is not None:
+            compute = "serverless"
+
+        manifest = {
+            "compute": compute,
+            "version": self.version,
+        }
+
+        self.app.openapi_schema["info"]["apipod"] = manifest
         return self.app.openapi_schema
 
     def get_job(self, job_id: str, return_format: str = 'json') -> JobResult:
@@ -227,7 +190,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         if self.job_queue is None:
             return JobResultFactory.job_not_found(job_id)
 
-        ret_job = self.job_queue.get_job_result(job_id)
+        ret_job = self.job_queue.get_job_result(job_id, link_prefix=self.prefix)
         if ret_job is None:
             return JobResultFactory.job_not_found(job_id)
 
@@ -237,71 +200,41 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         return ret_job
 
     def post_cancel_job(self, job_id: str) -> dict:
-        """Cancel a background job (gateway / orchestrator integration)."""
+        """Cancel a background job via the queue port."""
         job_id = job_id.strip().strip('"').strip("'").strip("?").strip("#")
         if self.job_queue is None:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Job queue not configured.")
 
-        cancel_fn = getattr(self.job_queue, "cancel_gateway_job", None)
-        if callable(cancel_fn):
-            return cancel_fn(job_id)
-
         try:
-            self.job_queue.cancel_job(job_id)
+            summary = self.job_queue.cancel_job(job_id)
         except NotImplementedError:
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
                 detail="Cancellation is not supported for this job queue.",
             ) from None
-        return {"id": job_id, "status": "cancelled", "message": "Job cancelled."}
+        return summary or {"id": job_id, "status": "cancelled", "message": "Job cancelled."}
 
-    async def stream_job_sse(self, job_id: str, request: Request):
-        """Server-Sent Events for streaming job output (requires stream_store)."""
-        job_id = job_id.strip().strip('"').strip("'").strip("?").strip("#")
-        if self.stream_store is None:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Streaming not configured.")
+    def add_job(self, func: Callable, job_params: dict) -> JobResult:
+        """Enqueue a task and return a :class:`JobResult` with endpoint-aware links."""
         if self.job_queue is None:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Job queue not configured.")
+            raise ValueError("Job Queue is not initialized. Cannot add job.")
 
-        jq = self.job_queue
-        job_data = jq.get_job_status(job_id) if hasattr(jq, "get_job_status") else None
-
-        if job_data is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job '{job_id}' not found.")
-
-        st = (job_data.get("status") or "").lower()
-        if st != "streaming" and not self.stream_store.stream_exists(job_id):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Job '{job_id}' is not streaming (status: {job_data.get('status')}).",
-            )
-
-        async def _event_generator():
-            try:
-                async for chunk in self.stream_store.read_chunks(job_id):
-                    if await request.is_disconnected():
-                        break
-                    yield chunk
-            except Exception:
-                self._logger.exception("Error during stream delivery | job_id=%s", job_id)
-                yield 'data: {"error": "Internal stream error"}\n\n'
-
-        return StreamingResponse(
-            _event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
+        plan = self._endpoint_plans.get(f"{func.__module__}.{func.__qualname__}")
+        supports_streaming = (
+            self.stream_store is not None and plan is not None and plan.is_streaming
         )
-
+        return self.job_queue.add_job(
+            job_function=func,
+            job_params=job_params,
+            supports_streaming=supports_streaming,
+            link_prefix=self.prefix,
+        )
 
     def endpoint(self, path: str, methods: list[str] | None = None, max_upload_file_size_mb: int = None, queue_size: int = 500, use_queue: bool = None, *args, **kwargs):
         """
         Unified endpoint decorator.
 
-        If LLM configuration is detected on the function, it creates an LLM endpoint.
+        If a parameter is annotated with a standardized request schema, it creates a schema endpoint.
 
         If job_queue is configured (and use_queue is not False), it creates a task endpoint.
         Otherwise, it creates a standard FastAPI endpoint.
@@ -317,181 +250,31 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         should_use_queue = self._determine_queue_usage(use_queue, normalized_path)
 
         def decorator(func: Callable) -> Callable:
-            plan = self._create_endpoint_plan(
-                func=func,
-                normalized_path=normalized_path,
+            plan = build_plan(
+                func,
+                path=normalized_path,
                 methods=methods,
                 max_upload_file_size_mb=max_upload_file_size_mb,
                 queue_size=queue_size,
                 should_use_queue=should_use_queue,
                 route_args=args,
-                route_kwargs=kwargs
+                route_kwargs=kwargs,
             )
+            # save the plan for later use
+            self._endpoint_plans[f"{func.__module__}.{func.__qualname__}"] = plan
 
-            if plan.is_llm:
-                return self._register_llm_endpoint(func, plan)
-            if plan.is_streaming:
-                return self._create_streaming_endpoint_decorator(
-                    path=plan.path,
-                    methods=plan.methods,
-                    max_upload_file_size_mb=plan.max_upload_file_size_mb,
-                    args=plan.route_args,
-                    kwargs=plan.route_kwargs
-                )(func)
+            # Streaming with a queue + stream store mimics a real deployment:
+            # the job is queued, the worker produces chunks into the stream store
+            # and the client consumes them from GET /stream/{job_id}. Without a
+            # queue (plain FastAPI) streaming goes straight to the client.
+            if plan.is_streaming and plan.schema_binding is None and not plan.should_use_queue:
+                return self._create_streaming_endpoint_decorator(plan)(func)
             if plan.should_use_queue:
-                return self._create_task_endpoint_decorator(
-                    path=plan.path,
-                    methods=plan.methods,
-                    max_upload_file_size_mb=plan.max_upload_file_size_mb,
-                    queue_size=plan.queue_size,
-                    args=plan.route_args,
-                    kwargs=plan.route_kwargs
-                )(func)
+                return self._create_task_endpoint_decorator(plan)(func)
 
-            return self._create_standard_endpoint_decorator(
-                path=plan.path,
-                methods=plan.methods,
-                max_upload_file_size_mb=plan.max_upload_file_size_mb,
-                args=plan.route_args,
-                kwargs=plan.route_kwargs
-            )(func)
+            return self._create_standard_endpoint_decorator(plan)(func)
 
         return decorator
-
-    def _create_endpoint_plan(
-        self,
-        *,
-        func: Callable,
-        normalized_path: str,
-        methods: list[str] | None,
-        max_upload_file_size_mb: int | None,
-        queue_size: int,
-        should_use_queue: bool,
-        route_args: tuple,
-        route_kwargs: dict,
-    ) -> EndpointExecutionPlan:
-        """Build an orchestration plan for endpoint registration and execution."""
-        return self._endpoint_configurator.build_plan(
-            func=func,
-            path=normalized_path,
-            methods=methods,
-            max_upload_file_size_mb=max_upload_file_size_mb,
-            queue_size=queue_size,
-            should_use_queue=should_use_queue,
-            route_args=route_args,
-            route_kwargs=route_kwargs,
-        )
-
-    def _register_llm_endpoint(self, func: Callable, plan: EndpointExecutionPlan) -> Callable:
-        """Register a FastAPI LLM endpoint from an endpoint execution plan."""
-        req_model = plan.request_model
-        res_model = plan.response_model
-        endpoint_type = plan.endpoint_type
-
-        if req_model is None or res_model is None or endpoint_type is None:
-            raise ValueError("Invalid LLM endpoint plan: missing request/response metadata")
-
-        if plan.should_use_queue:
-            try:
-                self._job_func_registry[func.__name__] = func
-            except Exception:
-                pass
-
-        @functools.wraps(func)
-        async def _unified_worker(*w_args, **w_kwargs):
-            payload = next(
-                (v for v in w_kwargs.values() if isinstance(v, (dict, req_model))),
-                next((a for a in w_args if isinstance(a, (dict, req_model))), None)
-            )
-
-            if payload is None:
-                raise ValueError(f"Request does not match expected model {req_model}")
-
-            clean_kwargs = {k: v for k, v in w_kwargs.items() if not isinstance(v, req_model)}
-            openai_req = self._prepare_llm_payload(req_model=req_model, payload=payload)
-
-            return await self.handle_llm_request(
-                func=func,
-                openai_req=openai_req,
-                should_use_queue=plan.should_use_queue,
-                res_model=res_model,
-                endpoint_type=endpoint_type,
-                **clean_kwargs
-            )
-
-        final_handler = self._prepare_func_for_media_file_upload_with_fastapi(
-            _unified_worker,
-            plan.max_upload_file_size_mb
-        )
-
-        route_kwargs = dict(plan.route_kwargs)
-        if plan.should_use_queue:
-            route_kwargs["response_model_exclude_none"] = True
-
-        self.api_route(
-            path=plan.path,
-            methods=plan.active_methods,
-            response_model=JobResult if plan.should_use_queue else res_model,
-            *plan.route_args,
-            **route_kwargs
-        )(final_handler)
-
-        return final_handler
-    
-    async def _execute_func(self, func, **kwargs):
-        """
-        Execute a function, handling both sync and async functions.
-        
-        Args:
-            func: Function to execute
-            **kwargs: Arguments to pass to function
-            
-        Returns:
-            Result of function execution
-        """
-        if inspect.iscoroutinefunction(func):
-            return await func(**kwargs)
-        else:
-            # Sync function - run in thread pool to avoid blocking
-            import asyncio
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, functools.partial(func, **kwargs))
-
-    async def _stream_generator(self, result):
-        """
-        Convert a sync or async generator into an async generator for StreamingResponse.
-        
-        Args:
-            result: Generator (sync or async) that yields streaming chunks
-            
-        Yields:
-            Streaming chunks as strings or bytes
-        """
-        import asyncio
-        
-        if inspect.isasyncgen(result):
-            # Async generator - yield directly
-            async for chunk in result:
-                if isinstance(chunk, (str, bytes)):
-                    yield chunk
-                else:
-                    yield str(chunk)
-        elif inspect.isgenerator(result):
-            # Sync generator - run in executor
-            loop = asyncio.get_event_loop()
-            try:
-                while True:
-                    chunk = await loop.run_in_executor(None, next, result, StopIteration)
-                    if chunk is StopIteration:
-                        break
-                    if isinstance(chunk, (str, bytes)):
-                        yield chunk
-                    else:
-                        yield str(chunk)
-            except StopIteration:
-                pass
-        else:
-            raise TypeError(f"Expected generator, got {type(result)}")
 
     def _normalize_endpoint_path(self, path: str) -> str:
         """Normalize the endpoint path to ensure it starts with '/'."""
@@ -507,134 +290,103 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             return use_queue
 
         return self.job_queue is not None
-    
-    def _determine_generator_fun(self, func: Callable) -> bool:
+
+    # ------------------------------------------------------------------
+    # Endpoint decorators (task / standard / streaming)
+    # ------------------------------------------------------------------
+    def _modify_result_decorator(self, func: Callable, plan: EndpointExecutionPlan, *, queued: bool) -> Callable:
         """
-        Determine whether the function is streaming data.
-        Uses quick, robust checks for common streaming patterns.
+        Wraps endpoint responses into their final transport form.
+
+        Streamable results (a token/chunk generator) become a stream:
+        - ``queued`` (job queue): a :class:`StreamProducer` is returned so the
+          worker relays chunks into the stream store (consumed via /stream) while
+          aggregating the full result for /status;
+        - direct (no queue): a :class:`StreamingResponse` is returned to the client.
+
+        Non-streaming schema results are wrapped into the response model; all
+        results are then serialized (media files -> JSON). Handlers that return
+        :class:`~apipod.engine.jobs.enqueue_payload.EnqueuePayload` (job
+        submission metadata for remote queues) are passed through unchanged.
         """
-        # 1. Direct generator functions
-        if inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(func):
-            return True
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            result = self.run_callable(func, *args, **kwargs)
 
-        # 2. Check return type hints
-        try:
-            hints = get_type_hints(func)
-            return_type = hints.get('return')
+            producer = build_stream_producer(result, plan.schema_binding)
+            if producer is not None:
+                return producer if queued else self._streaming_response_from_producer(producer)
 
-            if return_type is not None:
-                origin = getattr(return_type, '__origin__', return_type)
-                streaming_types = (Generator, AsyncGenerator, Iterator, AsyncIterator)
+            if is_enqueue_payload(result):
+                return result
 
-                if origin in streaming_types or return_type in streaming_types:
-                    return True
-        except Exception:
-            pass
+            binding = plan.schema_binding
+            if binding is not None:
+                result = wrap_schema_response(result, binding)
+            return JobResultFactory._serialize_result(result)
 
-        # 3. Check source code for yield keyword
-        try:
-            source = inspect.getsource(func)
-            if 'yield' in source:
-                return True
-        except Exception:
-            pass
+        # Python 3.12+ follows __wrapped__ when evaluating inspect.isgeneratorfunction().
+        # sync_wrapper is never a generator (it returns a JobResult or StreamProducer).
+        # Without this, FastAPI would mistake a task endpoint wrapping a generator for a
+        # streaming route and serve the JobResult as iterated key-value NDJSON chunks.
+        if hasattr(sync_wrapper, "__wrapped__"):
+            # Pin the signature explicitly so FastAPI can parse parameters
+            sync_wrapper.__signature__ = inspect.signature(func)
+            del sync_wrapper.__wrapped__
 
-        return False
+        return sync_wrapper
 
-    def _create_task_endpoint_decorator(self, path: str, methods: list[str] | None, max_upload_file_size_mb: int, queue_size: int, args, kwargs):
+    def _create_task_endpoint_decorator(self, plan: EndpointExecutionPlan):
         """Create a decorator for task endpoints (background job execution)."""
         # FastAPI route decorator (returning JobResult)
-        task_kwargs = dict(kwargs)
+        task_kwargs = dict(plan.route_kwargs)
         task_kwargs["response_model_exclude_none"] = True
         fastapi_route_decorator = self.api_route(
-            path=path,
-            methods=["POST"] if methods is None else methods,
+            path=plan.path,
+            methods=plan.active_methods,
             response_model=JobResult,
-            *args,
+            *plan.route_args,
             **task_kwargs
         )
 
         # Queue decorator
         queue_decorator = super().job_queue_func(
-            path=path,
-            queue_size=queue_size,
-            *args,
-            **kwargs
+            path=plan.path,
+            queue_size=plan.queue_size,
+            *plan.route_args,
+            **plan.route_kwargs
         )
 
         def decorator(func: Callable) -> Callable:
+            func = self._modify_result_decorator(func, plan, queued=True)
             # Add job queue functionality and prepare for FastAPI file handling
             queue_decorated = queue_decorator(func)
-            # Register the function so workers can execute it (dev mode).
-            try:
-                self._job_func_registry[func.__name__] = func
-            except Exception:
-                pass
-            upload_enabled = self._prepare_func_for_media_file_upload_with_fastapi(queue_decorated, max_upload_file_size_mb)
+
+            upload_enabled = self._prepare_func_for_media_file_upload_with_fastapi(
+                queue_decorated, plan.max_upload_file_size_mb, plan=plan,
+            )
             return fastapi_route_decorator(upload_enabled)
 
         return decorator
 
-    def _create_standard_endpoint_decorator(self, path: str, methods: list[str] | None, max_upload_file_size_mb: int, args, kwargs):
-        """Create a decorator for standard endpoints (direct execution)."""
-        # FastAPI route decorator
+    def _create_standard_endpoint_decorator(self, plan: EndpointExecutionPlan):
+        """Create a decorator for standard and schema endpoints (direct execution)."""
+        route_kwargs = dict(plan.route_kwargs)
+        if plan.is_schema_endpoint:
+            route_kwargs["response_model_exclude_none"] = True
         fastapi_route_decorator = self.api_route(
-            path=path,
-            methods=["POST"] if methods is None else methods,
-            *args,
-            **kwargs
-        )
-
-        def file_result_modification_decorator(func: Callable) -> Callable:
-            """Wrap endpoint result and serialize it."""
-            @functools.wraps(func)
-            def sync_wrapper(*args, **kwargs):
-                result = func(*args, **kwargs)
-                return JobResultFactory._serialize_result(result)
-            return sync_wrapper
-
-        def decorator(func: Callable) -> Callable:
-            result_modified = file_result_modification_decorator(func)
-            with_file_upload_signature = self._prepare_func_for_media_file_upload_with_fastapi(result_modified, max_upload_file_size_mb)
-            return fastapi_route_decorator(with_file_upload_signature)
-
-        return decorator
-
-    def _create_streaming_endpoint_decorator(self, path: str, methods: list[str] | None, max_upload_file_size_mb: int, args, kwargs):
-        """Create a decorator for streaming endpoints."""
-        from fastapi.responses import StreamingResponse
-
-        # Extract custom headers if provided
-        custom_headers = kwargs.pop('response_headers', None)
-
-        fastapi_route_decorator = self.api_route(
-            path=path,
-            methods=["POST"] if methods is None else methods,
-            *args,
-            **kwargs
+            path=plan.path,
+            methods=plan.active_methods,
+            response_model=plan.schema_binding.response_model if plan.is_schema_endpoint else None,
+            *plan.route_args,
+            **route_kwargs
         )
 
         def decorator(func: Callable) -> Callable:
-            @functools.wraps(func)
-            async def streaming_wrapper(*w_args, **w_kwargs):
-                result = await self._execute_func(func, *w_args, **w_kwargs)
-                generator = self._stream_generator(result)
-
-                # Merge default and custom headers
-                headers = {
-                    "Cache-Control": "no-cache",
-                    "X-Accel-Buffering": "no"
-                }
-                if custom_headers:
-                    headers.update(custom_headers)
-
-                return StreamingResponse(
-                    generator,
-                    media_type="text/event-stream",
-                    headers=headers
-                )
-
-            with_file_upload_signature = self._prepare_func_for_media_file_upload_with_fastapi(streaming_wrapper, max_upload_file_size_mb)
+            result_modified = self._modify_result_decorator(func, plan, queued=False)
+            with_file_upload_signature = self._prepare_func_for_media_file_upload_with_fastapi(
+                result_modified, plan.max_upload_file_size_mb, plan=plan,
+            )
             return fastapi_route_decorator(with_file_upload_signature)
 
         return decorator

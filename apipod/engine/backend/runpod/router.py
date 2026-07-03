@@ -1,40 +1,79 @@
-import asyncio
 import functools
 import inspect
 import traceback
 from datetime import datetime, timezone
-from typing import Union, Callable
+from typing import Union, Callable, Iterator
 
 from apipod.common import constants
-from apipod.engine.jobs.base_job import JOB_STATUS
-from apipod.engine.jobs.job_progress import JobProgressRunpod, JobProgress
-from apipod.engine.jobs.job_result import (
-    JobResultFactory,
-    JobResult,
-    JobMetrics,
-    _compute_duration_s,
-    _job_status_to_public,
-)
+from apipod.engine.jobs.base_job import BaseJob, JOB_STATUS
+from apipod.engine.jobs.job_progress import JobProgressRunpod
+from apipod.engine.jobs.job_result import JobResultFactory
 from apipod.engine.base_backend import _BaseBackend
+from apipod.engine.endpoint_config import build_plan, EndpointExecutionPlan
+from apipod.engine.signatures.analysis import job_progress_param_names
 from apipod.engine.files.base_file_mixin import _BaseFileHandlingMixin
-from apipod.engine.backend.runpod.llm_mixin import _RunPodLLMMixin
+from apipod.engine.backend.schema_resolve import (
+    SchemaBinding,
+    SchemaStreamSerializer,
+    STREAM_CHUNK_SPECS,
+    iter_media_chunks,
+    prepare_schema_call,
+    wrap_schema_response,
+)
+from apipod.engine.streaming.stream_serializer import as_sync_iter, encode_chunk, is_streaming_result
 
-from apipod.engine.utils import normalize_name
-from apipod.common.settings import APIPOD_PROVIDER, APIPOD_PORT
+from apipod.engine.utils import normalize_name, normalize_mount_prefix
+from apipod.common.settings import APIPOD_PORT
+from media_toolkit import AudioFile, VideoFile
 
 
-class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin):
+class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
     """
     Adds routing functionality for the runpod serverless framework.
     Provides enhanced file handling and conversion capabilities.
     """
-    def __init__(self, title: str = "APIPod for ", summary: str = None, *args, **kwargs):
+    def __init__(self, title: str = "APIPod for ", summary: str = None, simulate: bool = False, prefix: str = "", *args, **kwargs):
         super().__init__(title=title, summary=summary, *args, **kwargs)
-        _RunPodLLMMixin.__init__(self)
 
+        # When True, start() runs RunPod's local API emulator instead of the real
+        # serverless worker (set by APIPod(simulate="serverless-runpod", direct=True)).
+        self.simulate = simulate
+        self.prefix = normalize_mount_prefix(prefix)
         self.routes = {}  # routes are organized like {"ROUTE_NAME": "ROUTE_FUNCTION"}
+        self._endpoint_plans: dict[str, EndpointExecutionPlan] = {}
+        self._endpoint_source_funcs: dict[str, Callable] = {}
 
         self.add_standard_routes()
+
+    def _apply_mount_prefix(self, mount_prefix: str) -> None:
+        mount = normalize_mount_prefix(mount_prefix)
+        if mount:
+            self.prefix = mount
+
+    def include_router(
+        self,
+        router: "SocaityRunpodRouter",
+        prefix: str = "",
+        **kwargs,
+    ) -> None:
+        """Mount another APIPod RunPod router under *prefix* (path prefix only)."""
+        del kwargs
+        if not isinstance(router, SocaityRunpodRouter):
+            raise TypeError(
+                f"APIPod include_router expects a SocaityRunpodRouter instance, got {type(router)!r}"
+            )
+        mount = normalize_mount_prefix(prefix)
+        router._apply_mount_prefix(mount)
+        head = mount.strip("/")
+        for path, route in router.routes.items():
+            if path == "openapi.json":
+                continue
+            prefixed = f"{head}/{path.strip('/')}" if head else path.strip("/")
+            self.routes[prefixed] = route
+            if path in router._endpoint_plans:
+                self._endpoint_plans[prefixed] = router._endpoint_plans[path]
+            if path in router._endpoint_source_funcs:
+                self._endpoint_source_funcs[prefixed] = router._endpoint_source_funcs[path]
 
     def add_standard_routes(self):
         self.endpoint(path="openapi.json")(self.get_openapi_schema)
@@ -43,97 +82,77 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
         path = normalize_name(path, preserve_paths=True).strip("/")
 
         def decorator(func: Callable) -> Callable:
-            # 1. Auto-Detection
-            req_model, res_model, endpoint_type = self._get_llm_config(func)
-
-            @functools.wraps(func)
-            def wrapper(*w_args, **w_kwargs):
-                self.status = constants.SERVER_HEALTH.BUSY
-                
-                try:
-                    if req_model:
-                        payload = w_kwargs.get("payload", None)
-
-                        openai_req = self._prepare_llm_payload(
-                            req_model=req_model,
-                            payload=payload
-                        )
-
-                        w_kwargs["payload"] = openai_req
-
-                        return self.handle_llm_request(
-                            func=func,
-                            openai_req=openai_req,
-                            req_model=req_model,
-                            res_model=res_model,
-                            endpoint_type=endpoint_type,
-                            w_args=w_args,
-                            w_kwargs=w_kwargs
-                        )
-
-                    # Default execution for standard endpoints
-                    return self._execute_sync_or_async(func, w_args, w_kwargs)
-                finally:
-                    self.status = constants.SERVER_HEALTH.RUNNING
-
-            self.routes[path] = wrapper
-            return wrapper
+            plan = build_plan(func, path=path)
+            self._endpoint_plans[path] = plan
+            self._endpoint_source_funcs[path] = func
+            route = self._build_route(func, plan)
+            self.routes[path] = route
+            return route
         return decorator
 
-    def _yield_native_stream(self, func, args, kwargs):
-        """Bridge for RunPod native generator streaming."""
-        from starlette.responses import StreamingResponse
-        
-        # Execute the function
-        result = self._execute_sync_or_async(func, args, kwargs)
-        
-        # If it's a StreamingResponse (shouldn't happen in RunPod, but handle it)
-        if isinstance(result, StreamingResponse):
-            body_iterator = result.body_iterator
-            
-            if inspect.isasyncgen(body_iterator):
-                while True:
-                    try:
-                        chunk = self._run_in_loop(body_iterator.__anext__())
-                        yield chunk if isinstance(chunk, (str, bytes)) else str(chunk)
-                    except StopAsyncIteration:
-                        break
-            else:
-                for chunk in body_iterator:
-                    yield chunk if isinstance(chunk, (str, bytes)) else str(chunk)
-            return
-        
-        # Handle async generators
-        if inspect.isasyncgen(result):
-            while True:
-                try:
-                    chunk = self._run_in_loop(result.__anext__())
-                    yield chunk if isinstance(chunk, (str, bytes)) else str(chunk)
-                except StopAsyncIteration:
-                    break
-            return
-        
-        # Handle sync generators
-        if inspect.isgenerator(result):
-            for chunk in result:
-                yield chunk if isinstance(chunk, (str, bytes)) else str(chunk)
-            return
-        
-        # Not a generator - shouldn't happen for streaming
-        raise TypeError(f"Expected generator for streaming, got {type(result)}")
+    def _build_route(self, func: Callable, plan: EndpointExecutionPlan) -> Callable:
+        """
+        Compose the callable registered for a route from its execution plan.
 
-    def _execute_sync_or_async(self, func, args, kwargs):
-        if inspect.iscoroutinefunction(func):
-            return self._run_in_loop(func(*args, **kwargs))
-        return func(*args, **kwargs)
+        Schema endpoints validate + media-parse their request themselves; plain
+        endpoints get the generic media file-upload conversion wrapped in.
+        """
+        @functools.wraps(func)
+        def wrapper(*w_args, **w_kwargs):
+            self.status = constants.SERVER_HEALTH.BUSY
+            try:
+                if plan.is_schema_endpoint:
+                    return self._handle_schema_request(func, plan.schema_binding, w_args, w_kwargs)
+                result = self.run_callable(func, *w_args, **w_kwargs)
+                # Plain generator endpoints stream too: turn the generator into a
+                # RunPod-native stream of JSON-safe chunks (RunPod aggregates it).
+                native_stream = self._as_native_stream(result)
+                return native_stream if native_stream is not None else result
+            finally:
+                self.status = constants.SERVER_HEALTH.RUNNING
 
-    def _run_in_loop(self, coro):
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop.run_until_complete(coro)
+        return wrapper if plan.is_schema_endpoint else self._handle_file_uploads(wrapper)
+
+    # ------------------------------------------------------------------
+    # Standardized schema endpoints
+    # ------------------------------------------------------------------
+    def _handle_schema_request(self, func: Callable, binding: SchemaBinding, args: tuple, kwargs: dict):
+        """
+        Run a standardized schema endpoint: validate + media-parse the request
+        (``prepare_schema_call``), then stream or wrap the response into the
+        registered response model (``wrap_schema_response``).
+        """
+        request = prepare_schema_call(binding, kwargs)
+        result = self.run_callable(func, *args, **kwargs)
+
+        if getattr(request, "stream", False):
+            native_stream = self._as_native_stream(result, binding)
+            if native_stream is not None:
+                return native_stream
+
+        return wrap_schema_response(result, binding)
+
+    def _as_native_stream(self, result, binding: Union[SchemaBinding, None] = None) -> Union[Iterator, None]:
+        """
+        Wrap a streamable result into a RunPod-native generator of JSON-safe chunks.
+
+        - ``AudioFile`` / ``VideoFile`` → base64-encoded byte chunks;
+        - schema generator with a registered chunk model (e.g. chat) → standardized
+          ``ChatCompletionChunk`` stream via :class:`SchemaStreamSerializer`;
+        - any other generator → ``encode_chunk`` (base64 for binary, str for text).
+
+        Returns ``None`` when the result is not streamable.
+        """
+        if isinstance(result, (AudioFile, VideoFile)):
+            return (encode_chunk(chunk) for chunk in iter_media_chunks(result))
+
+        if is_streaming_result(result):
+            tokens = as_sync_iter(result)
+            if binding is not None and binding.tag in STREAM_CHUNK_SPECS:
+                return SchemaStreamSerializer(binding).stream(tokens)
+            return (encode_chunk(chunk) for chunk in tokens)
+
+        return None
 
     def get(self, path: str = None, *args, **kwargs):
         return self.endpoint(path=path, *args, **kwargs)
@@ -153,11 +172,7 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
         Returns:
             Updated kwargs with job_progress added
         """
-        job_progress_params = []
-        for param in inspect.signature(func).parameters.values():
-            if param.annotation in (JobProgress, JobProgressRunpod) or param.name == "job_progress":
-                job_progress_params.append(param.name)
-
+        job_progress_params = job_progress_param_names(func)
         if job_progress_params:
             jp = JobProgressRunpod(job)
             for job_progress_param in job_progress_params:
@@ -196,85 +211,37 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
         if missing_args:
             raise Exception(f"Arguments {missing_args} are missing")
 
-        # Handle file uploads and conversions
-        route_function = self._handle_file_uploads(route_function)
-
-        start_time = datetime.now(timezone.utc)
-        result = JobResult(job_id=job["id"], endpoint=path)
+        # Create a BaseJob record so the result can be assembled by the same
+        # from_base_job path used by the local queue worker.
+        job_record = BaseJob(id=job["id"])
+        job_record.metrics.started_at = datetime.now(timezone.utc)
 
         try:
-            # Execute the function (Sync or Async Handling)
-            res = self._execute_route_function(route_function, kwargs)
+            res = self.run_callable(route_function, **kwargs)
 
-            # Check if result is a generator (streaming response)
+            # Streaming response: hand the generator straight to RunPod, which
+            # aggregates it (no JobResult envelope is produced for streams).
             if inspect.isgenerator(res) or inspect.isasyncgen(res):
-                # For streaming, return the generator directly
-                # RunPod will handle the streaming
                 return res
 
-            # Convert result to JSON if it's a MediaFile / MediaList / Pydantic Model
-            res = JobResultFactory._serialize_result(res)
-
-            result.result = res
-            result.status = _job_status_to_public(JOB_STATUS.FINISHED)
+            job_record.result = res
+            job_record.status = JOB_STATUS.FINISHED
         except Exception as e:
-            result.error = str(e)
-            result.status = _job_status_to_public(JOB_STATUS.FAILED)
+            job_record.error = str(e)
+            job_record.status = JOB_STATUS.FAILED
             print(f"Job {job['id']} failed: {str(e)}")
             traceback.print_exc()
 
+        # Adopt the progress handle the function reported through, so its final
+        # progress/message flow into the JobResult.
         for arg in kwargs.values():
             if isinstance(arg, JobProgressRunpod):
-                result.progress = float(arg._progress)
-                result.message = arg._message
+                job_record.job_progress = arg
                 break
 
-        inference_time_s = _compute_duration_s(start_time, datetime.now(timezone.utc))
-        if inference_time_s is not None:
-            result.metrics = JobMetrics(inference_time_s=inference_time_s)
+        job_record.metrics.finished_at = datetime.now(timezone.utc)
 
-        return result.model_dump_json(exclude_none=True)
-
-    def _execute_route_function(self, route_function, kwargs):
-        """
-        Execute a route function, handling both sync and async functions.
-        
-        Args:
-            route_function: The function to execute
-            kwargs: Keyword arguments to pass to the function
-            
-        Returns:
-            The result of the function execution
-        """
-        if not inspect.iscoroutinefunction(route_function):
-            # Synchronous function - simple execution
-            return route_function(**kwargs)
-        
-        # Async function - need event loop handling
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Already in async context - shouldn't happen in RunPod handler
-                # But if it does, we need to handle it differently
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        asyncio.run, 
-                        route_function(**kwargs)
-                    )
-                    return future.result()
-            else:
-                # Loop exists but not running - use it
-                return loop.run_until_complete(route_function(**kwargs))
-        except RuntimeError:
-            # No event loop exists - create one
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(route_function(**kwargs))
-            finally:
-                loop.close()
-                asyncio.set_event_loop(None)
+        return JobResultFactory.from_base_job(job_record).model_dump_json(exclude_none=True)
 
     def handler(self, job):
         """
@@ -288,11 +255,11 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
         del inputs["path"]
 
         result = self._router(route, job, **inputs)
-        
+
         # If it's a generator, return it directly for RunPod to stream
         if inspect.isgenerator(result):
             return result
-        
+
         # Otherwise return the JSON result
         return result
 
@@ -316,8 +283,13 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
         rp_fastapi.RUN_DESCRIPTION = desc + "\n" + rp_fastapi.RUN_DESCRIPTION
 
         # hack to print version also in runpod
-        version = self.version
-
+        # Add APIPod manifest like in the FastAPI router
+        manifest = {
+            "compute": "serverless",
+            "version": self.version,
+            "simulate": self.simulate,
+        }
+   
         class WorkerAPIWithModifiedInfo(rp_fastapi.WorkerAPI):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
@@ -327,7 +299,7 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
             def custom_openapi(self):
                 if not self.rp_app.openapi_schema:
                     self._orig_openapi_func()
-                self.rp_app.openapi_schema["info"]["apipod"] = version
+                self.rp_app.openapi_schema["info"]["apipod"] = manifest
                 self.rp_app.openapi_schema["info"]["runpod"] = rp_fastapi.runpod_version
                 return self.rp_app.openapi_schema
 
@@ -335,16 +307,20 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
 
         runpod.serverless.start({"handler": self.handler, "return_aggregate_stream": True})
 
-    def _create_openapi_compatible_function(self, func: Callable) -> Callable:
+    def _create_openapi_compatible_function(
+        self,
+        func: Callable,
+        plan: EndpointExecutionPlan | None = None,
+    ) -> Callable:
         """
-        Create a function compatible with FastAPI OpenAPI generation by applying 
+        Create a function compatible with FastAPI OpenAPI generation by applying
         the same conversion logic as the FastAPI mixin, but without runtime dependencies.
 
         This generates the rich schema with proper file upload handling.
 
         Args:
             func: Original function to convert
-            max_upload_file_size_mb: Maximum file size in MB
+            plan: Endpoint execution plan (controls ``stream`` in request schema)
 
         Returns:
             Function with FastAPI-compatible signature for OpenAPI generation
@@ -357,7 +333,9 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
         # Create a temporary instance of the FastAPI mixin to use its conversion methods
         temp_mixin = _fast_api_file_handling_mixin(max_upload_file_size_mb=5)
         # Apply the same preparation logic as FastAPI router
-        with_file_upload_signature = temp_mixin._prepare_func_for_media_file_upload_with_fastapi(func, 5)
+        with_file_upload_signature = temp_mixin._prepare_func_for_media_file_upload_with_fastapi(
+            func, 5, plan=plan,
+        )
         # 4. Set proper return type for job-based endpoints
 
         sig = inspect.signature(with_file_upload_signature)
@@ -429,9 +407,11 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
 
         fastapi_routes = []
         for path, func in self.routes.items():
+            source_func = self._endpoint_source_funcs.get(path, func)
+            plan = self._endpoint_plans.get(path)
             # Create FastAPI-compatible function for rich OpenAPI generation
             try:
-                compatible_func = self._create_openapi_compatible_function(func)
+                compatible_func = self._create_openapi_compatible_function(source_func, plan)
                 fastapi_routes.append(APIRoute(
                     path=f"/{path.strip('/')}", 
                     endpoint=compatible_func, 
@@ -471,18 +451,23 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin, _RunPodLLMMixin)
             description=self.summary,
         )
 
-        # Add APIPod version information like the FastAPI router
-        schema["info"]["apipod"] = self.version
+        # Add APIPod manifest like in the FastAPI router
+        manifest = {
+            "compute": "serverless",
+            "version": self.version,
+            "simulate": self.simulate,
+        }
+        schema["info"]["apipod"] = manifest
 
         return schema
 
-    def start(self, port: int = APIPOD_PORT, provider: Union[constants.PROVIDER, str, None] = None, *args, **kwargs):
-        if provider is None:
-            provider = APIPOD_PROVIDER
-        if isinstance(provider, str):
-            provider = constants.PROVIDER(provider)
+    def start(self, port: int = APIPOD_PORT, **kwargs):
+        """Start the RunPod worker.
 
-        if provider == constants.PROVIDER.LOCALHOST:
+        In simulation (``APIPod(simulate="serverless-runpod", direct=True)``) RunPod's
+        local API emulator is used. In a managed deployment the real serverless worker runs.
+        """
+        if self.simulate:
             self.start_runpod_serverless_localhost(port=port)
         else:
             import runpod.serverless

@@ -1,12 +1,123 @@
 import functools
 import inspect
+import json
 from types import UnionType
-from typing import Any, Union, get_args, get_origin, Callable, List, Type
+from typing import Any, Optional, Union, get_args, get_origin, Callable, List, Type
 
-from media_toolkit import media_from_any, MediaFile, MediaList, MediaDict
+from pydantic import BaseModel
+
+from media_toolkit import media_from_any, MediaFile, MediaList, MediaDict, ImageFile, AudioFile, VideoFile
 from apipod.engine.signatures.upload import is_param_media_toolkit_file
-from apipod.engine.jobs.job_result import FileModel
+from socaity_schemas import AudioFileModel, FileModel, ImageFileModel, VideoFileModel
 from apipod.common.exceptions import FileUploadException
+
+
+# Wire-format pydantic file models mapped to the media-toolkit type they parse into.
+_FILE_MODEL_MEDIA_TYPES: dict = {
+    ImageFileModel: ImageFile,
+    AudioFileModel: AudioFile,
+    VideoFileModel: VideoFile,
+    FileModel: MediaFile,
+}
+
+
+def _media_type_for_file_model(file_model_cls: Type) -> Type:
+    """Resolve the media-toolkit type a FileModel subclass should be parsed into."""
+    for cls in file_model_cls.__mro__:
+        if cls in _FILE_MODEL_MEDIA_TYPES:
+            return _FILE_MODEL_MEDIA_TYPES[cls]
+    return MediaFile
+
+
+def _file_model_class_from_annotation(annotation: Any) -> Optional[Type[FileModel]]:
+    """Resolve a FileModel subclass from a parameter annotation (also inside unions)."""
+    if inspect.isclass(annotation) and issubclass(annotation, FileModel):
+        return annotation
+    if get_origin(annotation) in (Union, UnionType):
+        for arg in get_args(annotation):
+            if arg is type(None):
+                continue
+            resolved = _file_model_class_from_annotation(arg)
+            if resolved is not None:
+                return resolved
+    return None
+
+
+def _coerce_to_file_model(value: Any, file_model_cls: Type[FileModel]) -> Any:
+    """Parse wire-format FileModel payloads (dict, JSON string) into pydantic models."""
+    if isinstance(value, FileModel):
+        content = value.content
+        if isinstance(content, str) and content.strip().startswith("{"):
+            try:
+                parsed = json.loads(content.strip())
+                if isinstance(parsed, dict) and {"file_name", "content_type", "content"}.issubset(parsed.keys()):
+                    return file_model_cls.model_validate(parsed)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return value
+    if isinstance(value, dict):
+        return file_model_cls.model_validate(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("{"):
+            try:
+                return file_model_cls.model_validate(json.loads(stripped))
+            except (json.JSONDecodeError, ValueError):
+                pass
+    return value
+
+
+def _is_media_list_type(target_type: Any) -> bool:
+    """True for ``MediaList`` and parameterized forms like ``MediaList[ImageFile]``."""
+    if target_type is MediaList:
+        return True
+    return get_origin(target_type) is MediaList
+
+
+def _coerce_wire_list(value: Any) -> Any:
+    """Parse JSON list strings from multipart form fields."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("["):
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+    return value
+
+
+def _parse_file_model_value(value: Any) -> Any:
+    """Convert FileModel instances (also inside lists) into parsed media-toolkit objects."""
+    if isinstance(value, FileModel):
+        return media_from_any(
+            data=value.model_dump(include={"file_name", "content_type", "content"}),
+            type_hint=_media_type_for_file_model(type(value)),
+            use_temp_file=True,
+            temp_dir=None,
+            allow_reads_from_disk=False,
+        )
+    if isinstance(value, list):
+        return [_parse_file_model_value(item) for item in value]
+    return value
+
+
+def parse_schema_media_fields(schema_obj):
+    """
+    Replace FileModel-typed fields of a validated request schema with parsed
+    media-toolkit objects, so endpoint functions receive ready-to-use media —
+    exactly as method-level ``def endpoint(image: ImageFile)`` parameters do.
+
+    Lives in the file-handling layer because it is the schema-side counterpart
+    of the parameter-level upload conversion (``_convert_param_to_media_file``).
+    """
+    for field_name in type(schema_obj).model_fields:
+        value = getattr(schema_obj, field_name, None)
+        parsed = _parse_file_model_value(value)
+        if parsed is not value:
+            # The runtime type (e.g. ImageFile) intentionally differs from the wire
+            # annotation (ImageFileModel); bypass pydantic's assignment validation.
+            object.__setattr__(schema_obj, field_name, parsed)
+    return schema_obj
 
 
 class _BaseFileHandlingMixin:
@@ -156,16 +267,22 @@ class _BaseFileHandlingMixin:
             return param_value
 
         try:
+            file_model_cls = _file_model_class_from_annotation(annotation)
+            if file_model_cls is not None:
+                coerced = _coerce_to_file_model(param_value, file_model_cls)
+                if isinstance(coerced, FileModel):
+                    return _parse_file_model_value(coerced)
+
             # Determine target type for conversion
             target_type = self._get_media_target_type(annotation)
 
-            if target_type == MediaList:
+            if _is_media_list_type(target_type):
                 return MediaList(
                     read_system_files=False,
                     download_files=True,
                     use_temp_file=True,
-                    temp_dir=None
-                ).from_any(param_value)
+                    temp_dir=None,
+                ).from_any(_coerce_wire_list(param_value))
 
             # Attempt conversion
             m = media_from_any(
@@ -230,6 +347,49 @@ class _BaseFileHandlingMixin:
                 raise ValueError(f"Could not parse file {key}. Check if the file is correct. Error: {str(e)}")
         return converted_files
 
+    def _resolve_schema_annotation(self, annotation: Any) -> Optional[Type]:
+        """
+        Resolve an annotation (also ``Optional``/``Union``) to a pydantic request
+        schema whose nested FileModel fields should be parsed.
+
+        FileModel variants are themselves media handled by the parameter-level upload
+        path (``_convert_param_to_media_file``), so they are excluded here.
+        """
+        candidates = [annotation]
+        if get_origin(annotation) in (Union, UnionType):
+            candidates = [arg for arg in get_args(annotation) if arg is not type(None)]
+
+        for candidate in candidates:
+            if inspect.isclass(candidate) and issubclass(candidate, BaseModel) and not issubclass(candidate, FileModel):
+                return candidate
+        return None
+
+    def _parse_schema_params(self, schema_params: set, named_args: dict) -> dict:
+        """
+        Parse nested FileModel fields inside request-schema arguments.
+
+        Called by ``_handle_file_uploads`` before the media-param conversion so that
+        endpoint functions always receive ready-to-use media-toolkit objects regardless
+        of whether files arrive as top-level parameters or nested inside a schema.
+
+        Args:
+            schema_params: Parameter names whose annotation resolved to a pydantic schema.
+            named_args: Current mapping of parameter name → value for this call.
+
+        Returns:
+            Mapping of parameter name → schema instance with media fields replaced.
+        """
+        parsed = {}
+        for name in schema_params:
+            value = named_args.get(name)
+            if value is None:
+                continue
+            try:
+                parsed[name] = parse_schema_media_fields(value)
+            except Exception as e:
+                raise FileUploadException(message=f"Could not parse media fields of '{name}': {e}")
+        return parsed
+
     def _handle_file_uploads(self, func: Callable) -> Callable:
         """
         Wrap a function to handle file uploads and conversions.
@@ -243,7 +403,14 @@ class _BaseFileHandlingMixin:
         """
         sig = inspect.signature(func)
         media_params = self._get_media_params(sig)
-     
+
+        # Parameters typed as a pydantic request schema whose nested FileModel fields
+        # must be parsed into media-toolkit objects before the endpoint executes.
+        schema_params = {
+            name for name, annot in self._sig_to_annotations(sig).items()
+            if name not in media_params and self._resolve_schema_annotation(annot) is not None
+        }
+
         param_names = list(sig.parameters.keys())
 
         # Check if the original function is async
@@ -254,6 +421,9 @@ class _BaseFileHandlingMixin:
                 named_args = {param_names[i]: arg for i, arg in enumerate(args) if i < len(param_names)}
                 named_args.update(kwargs)
 
+                # Parse nested media inside schema parameters
+                named_args.update(self._parse_schema_params(schema_params, named_args))
+
                 # Convert media-related parameters
                 files_to_process = {
                     param_name: param_value
@@ -268,7 +438,7 @@ class _BaseFileHandlingMixin:
 
                 # Update arguments with converted files
                 named_args.update(processed_files)
-                
+
                 # AWAIT the async function
                 return await func(**named_args)
         else:
@@ -278,6 +448,9 @@ class _BaseFileHandlingMixin:
                 named_args = {param_names[i]: arg for i, arg in enumerate(args) if i < len(param_names)}
                 named_args.update(kwargs)
 
+                # Parse nested media inside schema parameters
+                named_args.update(self._parse_schema_params(schema_params, named_args))
+
                 # Convert media-related parameters
                 files_to_process = {
                     param_name: param_value
@@ -292,7 +465,7 @@ class _BaseFileHandlingMixin:
 
                 # Update arguments with converted files
                 named_args.update(processed_files)
-                
+
                 # Call the sync function directly
                 return func(**named_args)
 

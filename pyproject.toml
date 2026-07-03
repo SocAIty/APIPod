@@ -17,6 +17,7 @@ dependencies = [
     "fastapi",
     'python-multipart>=0.0.20',
     "media-toolkit>=0.02.22",
+    "socaity-schemas>=0.0.1",
     "jinja2",
     "toml"
 ]
@@ -28,20 +29,34 @@ apipod = "apipod.cli:main"
 runpod = [
     "runpod>=1.7.7"
 ]
+test = [
+    "pytest",
+    "httpx",
+    "ruff",
+    "mypy",
+]
 
 
 [project.urls]
 Repository = "https://github.com/SocAIty/apipod"
 Homepage = "https://www.socaity.ai"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["apipod*"]
+[tool.pytest.ini_options]
+testpaths = ["test"]
+# Resolve in-repo apipod and sibling packages in local dev (CI installs from pip).
+pythonpath = [".", "test", "../fastsdk", "../socaity-schemas"]
 
-[tool.setuptools.package-data]
-apipod = [
-    "deploy/*.j2",
-    "deploy/*.txt",
-    "deploy/starter_README.md",
-]
+[tool.ruff]
+line-length = 120
+exclude = ["venv", "dist", "build", "*.egg-info"]
 
+[tool.ruff.lint]
+# Mirror the previous flake8 config: ignore stylistic rules that conflict with
+# black/our formatting conventions.
+ignore = ["E203", "E261", "E501", "W293"]
+
+[tool.mypy]
+# Soft static typing: a warning signal, never a build gate (see CI).
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_unused_ignores = false

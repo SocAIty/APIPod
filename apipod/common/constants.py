@@ -1,11 +1,6 @@
 from enum import Enum
 
 
-class ORCHESTRATOR(Enum):
-    SOCAITY = "socaity"
-    LOCAL = "local"
-
-
 class COMPUTE(Enum):
     DEDICATED = "dedicated"
     SERVERLESS = "serverless"
