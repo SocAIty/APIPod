@@ -14,6 +14,7 @@ from apipod.engine.jobs.job_result import JobResultFactory, JobResult
 from apipod.engine.endpoint_config import build_plan, EndpointExecutionPlan
 from apipod.engine.streaming.stream_serializer import build_stream_producer
 from apipod.engine.base_backend import _BaseBackend
+from apipod.models import load_declared_models
 from apipod.engine.queue.queue_mixin import _QueueMixin
 from apipod.engine.backend.fastapi.file_handling_mixin import _fast_api_file_handling_mixin
 from apipod.engine.backend.fastapi.streaming_mixin import _FastAPIStreamingMixin
@@ -432,6 +433,10 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
 
         # Include this router in the app
         self.app.include_router(self)
+
+        # Load declared apipod.Model instances before serving so the first
+        # request never pays the weight-loading cost.
+        load_declared_models()
 
         # Print help information
         print_host = "localhost" if host == "0.0.0.0" or host is None else host

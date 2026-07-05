@@ -189,15 +189,14 @@ This scans your project, picks a compatible base image (CUDA/cuDNN, ffmpeg inclu
 
 Requirements: Docker installed, plus a CUDA/cuDNN setup if your model needs the GPU.
 
-### Deploy
+### Analyze and deploy
 
 ```bash
-apipod deploy                 # coming soon
-apipod deploy serverless
-apipod deploy dedicated-azure
+apipod analyze                # pre-deploy report: HF repo checks, catalog match, GPU recommendation
+apipod deploy                 # analyze + create a deployment draft on Socaity
 ```
 
-The managed `deploy` command is on the roadmap. Today, build your container and deploy it through the [Socaity dashboard](https://www.socaity.ai) — the simplest path, with auth, scaling and routing handled for you.
+Both commands need a Socaity login (`socaity login`); everything else in APIPod works offline. `analyze` only prints a report. `deploy` runs the same analysis, resolves your declared models against the Socaity catalog, and creates a draft you finish in the [Socaity dashboard](https://www.socaity.ai) after pushing your container.
 
 ## Client SDK
 
@@ -227,7 +226,7 @@ client.text_to_speech("what a time to be alive")
 
 ## Roadmap
 
-- `apipod deploy` managed deployment command.
+- One-command deploy execution (container push + provisioning) on top of the draft flow.
 - MCP protocol support.
 
 ---

@@ -10,6 +10,7 @@ from apipod.engine.jobs.job_progress import JobProgressRunpod
 from apipod.engine.jobs.job_result import JobResultFactory
 from apipod.engine.base_backend import _BaseBackend
 from apipod.engine.endpoint_config import build_plan, EndpointExecutionPlan
+from apipod.models import load_declared_models
 from apipod.engine.signatures.analysis import job_progress_param_names
 from apipod.engine.files.base_file_mixin import _BaseFileHandlingMixin
 from apipod.engine.backend.schema_resolve import (
@@ -467,6 +468,9 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         In simulation (``APIPod(simulate="serverless-runpod", direct=True)``) RunPod's
         local API emulator is used. In a managed deployment the real serverless worker runs.
         """
+        # Load declared apipod.Model instances before the worker accepts jobs.
+        load_declared_models()
+
         if self.simulate:
             self.start_runpod_serverless_localhost(port=port)
         else:

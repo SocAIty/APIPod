@@ -1,7 +1,9 @@
+import importlib.util
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from apipod.deploy.detectors import (
     DependencyDetector,
@@ -25,6 +27,10 @@ class DeploymentConfig:
     system_packages: List[str] = field(default_factory=list)
     model_files: List[str] = field(default_factory=list)
     has_env_file: bool = False
+    # Declared apipod.Model instances and standalone include handles, collected
+    # by importing the entrypoint under APIPOD_SCAN=1 (declarations only).
+    models: List[Dict[str, Any]] = field(default_factory=list)
+    includes: List[Dict[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -64,9 +70,12 @@ class Scanner:
         if dependency_info.get("libturbojpg"):
             system_packages.append("libturbojpg")
 
+        entrypoint = entrypoint_info.get("file", target_file or "main.py")
+        models, includes = self._collect_declarations(entrypoint)
+
         deployment_config = DeploymentConfig(
             # Use the target_file if detection didn't already pick it up
-            entrypoint=entrypoint_info.get("file", target_file or "main.py"),
+            entrypoint=entrypoint,
             title=entrypoint_info.get("title", "apipod-service"),
             python_version=framework_info.get("python_version", "3.10"),
             pytorch=bool(framework_info.get("pytorch")),
@@ -78,10 +87,58 @@ class Scanner:
             system_packages=system_packages,
             model_files=framework_info.get("model_files", []),
             has_env_file=env_info.get("has_env_file", False),
+            models=models,
+            includes=includes,
         )
 
         print("\n--- Scan Completed ---\n")
         return deployment_config.to_dict()
+
+    def _collect_declarations(self, entrypoint: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
+        """Import the entrypoint under APIPOD_SCAN=1 and collect declared
+        ``apipod.Model`` instances and standalone include handles.
+
+        Scan mode forbids resolution, so importing performs no downloads or
+        GPU work. Import failures degrade to an empty declaration list; the
+        static detectors above still produce a usable config.
+        """
+        from apipod.models import declared_includes, declared_models
+
+        entrypoint_path = (self.root_path / entrypoint).resolve()
+        if not entrypoint_path.exists():
+            return [], []
+
+        os.environ["APIPOD_SCAN"] = "1"
+        try:
+            spec = importlib.util.spec_from_file_location("apipod_scan_entrypoint", entrypoint_path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        except Exception as exc:
+            print(f"Warning: could not import {entrypoint} to collect model declarations: {exc}")
+            return [], []
+        finally:
+            os.environ.pop("APIPOD_SCAN", None)
+
+        models: List[Dict[str, Any]] = []
+        owned_refs = set()
+        for model in declared_models():
+            entry: Dict[str, Any] = {"class": type(model).__name__}
+            handles = model.includes()
+            if not handles:
+                print(f"Warning: model {entry['class']} declares no include (weights unknown to the platform).")
+            for attr, handle in handles.items():
+                entry[attr] = handle.to_dict()
+                owned_refs.add((handle.kind, handle.ref))
+            models.append(entry)
+
+        includes = [
+            handle.to_dict()
+            for key, handle in declared_includes().items()
+            if key not in owned_refs
+        ]
+        if models or includes:
+            print(f"Declared models: {[m['class'] for m in models]}, standalone includes: {len(includes)}")
+        return models, includes
 
     def save_report(self, config: Dict[str, Any]) -> None:
         try:

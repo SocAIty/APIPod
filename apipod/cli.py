@@ -6,20 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from apipod.deploy.deployment_manager import DeploymentManager
-
-
-def input_yes_no(question: str, default: bool = True) -> bool:
-    """Prompt user for a yes/no response with default value."""
-    valid = {"yes": True, "y": True, "ye": True, "no": False, "n": False}
-    prompt = " [Y/n] " if default else " [y/N] "
-    while True:
-        sys.stdout.write(question + prompt)
-        choice = input().lower()
-        if choice == "":
-            return default
-        if choice in valid:
-            return valid[choice]
-        sys.stdout.write("Please respond with 'yes' or 'no' (or 'y'/'n').\n")
+from socaity_cli.prompts import input_yes_no
 
 
 def select_base_image(manager: DeploymentManager, config_data: dict) -> str:
@@ -234,14 +221,29 @@ def run_simulate(args):
     _run_service(args, simulate=target, native=args.native)
 
 
+def _load_or_scan_config() -> dict:
+    """Return the apipod.json config, scanning the project when missing or stale."""
+    manager = DeploymentManager()
+    config = manager.load_config() if manager.config_exists else None
+    if not config or "models" not in config:
+        print("Scanning project (models + includes)...")
+        config = manager.scan()
+        manager.save_config(config)
+    return config
+
+
+def run_analyze(args):
+    """Analyze the project against the Socaity backend (no draft, nothing persisted)."""
+    from socaity_cli.deployment import analyze_deployment
+
+    analyze_deployment(_load_or_scan_config())
+
+
 def run_deploy(args):
-    """Placeholder for the upcoming managed deployment command."""
-    target = args.target or "serverless"
-    print(
-        f"`apipod deploy {target}` is not available yet.\n"
-        "Deploy through the Socaity dashboard for now: https://www.socaity.ai\n"
-        f"Tip: validate the target locally first with `apipod simulate {target}`."
-    )
+    """Analyze the project against the Socaity backend and create a deployment draft."""
+    from socaity_cli.deployment import run_platform_deploy
+
+    run_platform_deploy(_load_or_scan_config())
 
 
 def run_help(args, parsers: dict):
@@ -287,7 +289,8 @@ Examples:
   apipod scan                                    Scan project and generate apipod.json
   apipod build                                   Build the deployment container
   apipod build path/to/service.py                Build from a specific Python file
-  apipod deploy                                  Deploy via Socaity (coming soon)
+  apipod analyze                                 Pre-deploy analysis via Socaity (no draft created)
+  apipod deploy                                  Analyze + create a Socaity deployment draft
         """,
     )
     subparsers = parser.add_subparsers(dest="command", metavar="command")
@@ -358,9 +361,17 @@ Examples:
     )
     parsers["build"] = build_parser
 
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Analyze the project against the Socaity platform (HF checks, catalog match, GPU hint).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  apipod analyze\n\nRequires a Socaity login (socaity login); nothing is created.",
+    )
+    parsers["analyze"] = analyze_parser
+
     deploy_parser = subparsers.add_parser(
         "deploy",
-        help="Deploy the service via Socaity (coming soon).",
+        help="Analyze the project and create a Socaity deployment draft.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n  apipod deploy\n  apipod deploy serverless-runpod",
     )
@@ -402,6 +413,8 @@ def main():
         run_scan(args)
     elif args.command == "build":
         run_build(args)
+    elif args.command == "analyze":
+        run_analyze(args)
     elif args.command == "deploy":
         run_deploy(args)
     elif args.command == "simulate":
