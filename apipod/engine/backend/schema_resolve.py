@@ -311,7 +311,7 @@ def _normalize_response_model(result: Any, response_model: Type) -> dict:
         result = {"choices": [{"index": 0, "message": {"content": result}, "finish_reason": "stop"}]}
     elif response_model is CompletionResponse and isinstance(result, str):
         result = {"choices": [{"text": result, "index": 0, "finish_reason": "stop"}]}
-    elif response_model is EmbeddingResponse and isinstance(result, list):
+    elif response_model in (EmbeddingResponse, MultimodalEmbeddingResponse) and isinstance(result, list):
         if not result:
             result = {"data": []}
         elif isinstance(result[0], (list, tuple)):

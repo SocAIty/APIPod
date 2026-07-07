@@ -80,6 +80,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             app = FastAPI(
                 title=self.title,
                 summary=self.summary,
+                description=self.description,
                 contact={"name": "SocAIty", "url": "https://www.socaity.ai"},
             )
 

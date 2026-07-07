@@ -449,7 +449,7 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
             version="1.0.0",
             routes=fastapi_routes,
             summary=self.summary,
-            description=self.summary,
+            description=self.description,
         )
 
         # Add APIPod manifest like in the FastAPI router

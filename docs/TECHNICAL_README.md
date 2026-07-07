@@ -19,13 +19,14 @@ It sits in an ecosystem of three packages:
 ```
 apipod/
 ├── api.py                  # APIPod() factory: resolves intent → backend instance
+├── serve.py                # serve(model): capability-based endpoint registration + start
 ├── common/
 │   ├── settings.py         # Env-driven config (APIPOD_SIMULATE / _DIRECT / _COMPUTE / _PROVIDER, cert, host, port)
 │   ├── constants.py        # Enums: COMPUTE, PROVIDER, SERVER_HEALTH
 │   └── schemas/
 │       └── __init__.py     # Re-exports from socaity-schemas (OpenAI-compatible request/response + FileModel)
 ├── engine/
-│   ├── base_backend.py     # Shared backend base (title, version, health)
+│   ├── base_backend.py     # Shared backend base (title, summary, description, version, health)
 │   ├── endpoint_config.py  # EndpointExecutionPlan + configurator (how to register an endpoint)
 │   ├── backend/
 │   │   ├── fastapi/        # SocaityFastAPIRouter + file handling, streaming mixin, exceptions
@@ -35,8 +36,38 @@ apipod/
 │   ├── queue/              # JobQueue, JobStore, _QueueMixin (enqueue instead of block)
 │   ├── streaming/          # StreamStore port + LocalStreamStore + StreamProducer
 │   └── signatures/         # Signature inspection policies (media params, Body vs Form, …)
+├── models/
+│   ├── includes.py         # include / include_hf handles (declare bytes, resolve lazily)
+│   ├── model.py            # Model base: load()/warmup(), registry, app-start loading
+│   └── transformers/       # Transformers base + TransformersLLM / TransformersVLM presets
 └── deploy/                 # `apipod build`: Dockerfile generation, dependency/CUDA detection
 ```
+
+### Model presets (`apipod/models/transformers`)
+
+``Transformers(Model)`` centralizes what every HF-backed preset shares: include
+normalization, ``from_pretrained`` kwargs (``dtype="auto"``, ``device_map="auto"``
+and the fastest available attention backend: ``flash_attention_2`` when the
+compiled ``flash_attn`` package plus CUDA are present, ``sdpa`` otherwise) and
+the threaded ``TextIteratorStreamer`` loop. ``TransformersLLM`` (causal chat +
+``embed_text``) and ``TransformersVLM`` (image+text chat + multimodal ``embed``)
+are the concrete presets. ``TransformersVLM`` resolves the model class through
+the auto-class ladder ``AutoModelForImageTextToText`` →
+``AutoModelForMultimodalLM``, which covers Qwen-VL generations as well as
+encoder-free unified models like Gemma 4.
+
+### serve() (`apipod/serve.py`)
+
+``apipod.serve(model)`` maps the model's inference methods to standard schema
+endpoints and starts the app: ``generate``/``stream`` → ``/chat`` (a
+``VLMChatRequest`` with an ``images`` list when ``generate`` accepts an
+``images`` parameter), ``embed`` → multimodal ``/embeddings``, ``embed_text`` →
+text ``/embeddings``, ``generate_image`` → ``/images``. Detection reads methods
+from ``type(model)`` (never the instance) so the lazy-load ``__getattr__`` of
+``Model`` is not triggered. Custom ``Model`` subclasses opt in by naming their
+methods accordingly; service files keep ``serve()`` under
+``if __name__ == "__main__":`` so ``apipod scan`` can import them without
+starting a server.
 
 ## Core principles
 

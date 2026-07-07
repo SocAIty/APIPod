@@ -1,5 +1,14 @@
 from apipod.api import APIPod
-from apipod.models import IncludeHandle, Model, TransformersLLM, include, include_hf, load_model
+from apipod.serve import serve
+from apipod.models import (
+    IncludeHandle,
+    Model,
+    Transformers,
+    TransformersLLM,
+    TransformersVLM,
+    include,
+    include_hf,
+)
 from apipod.engine.jobs.base_job import BaseJob, LocalJob
 from apipod.engine.jobs.job_progress import JobProgress
 from socaity_schemas import FileModel
@@ -21,12 +30,14 @@ except Exception:
 
 __all__ = [
     "APIPod",
+    "serve",
     "Model",
+    "Transformers",
     "TransformersLLM",
+    "TransformersVLM",
     "IncludeHandle",
     "include",
     "include_hf",
-    "load_model",
     "BaseJob",
     "LocalJob",
     "JobProgress",

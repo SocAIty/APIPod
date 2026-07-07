@@ -15,7 +15,8 @@ class _BaseBackend:
     Base class for all routers.
     """
     def __init__(
-            self, title: str = "APIPod", summary: str = "Create web-APIs for long-running tasks", *args, **kwargs
+            self, title: str = "APIPod", summary: str = "Create web-APIs for long-running tasks",
+            description: str = None, *args, **kwargs
     ):
         if title is None:
             title = "APIPod"
@@ -24,6 +25,9 @@ class _BaseBackend:
 
         self.title = title
         self.summary = summary
+        # Long-form service description; surfaces as the OpenAPI ``info.description``
+        # and becomes the catalog (MaaS) description on the platform.
+        self.description = description or summary
         self._health_check = HealthCheck()
         self.version = importlib.metadata.version("apipod")
 
