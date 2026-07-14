@@ -94,29 +94,39 @@ Text side scored on ShieldGemma-2B.
 For each image model, report: score, latency warm, latency cold, correct
 call at threshold 0.5. For ShieldGemma 4B, report per-policy score.
 
-## Sourcing decision (open, blocks Tanda B)
+## Sourcing plan (pending owner sign-off, blocks Tanda B)
 
-Sensitive material, needs an owner call before it hits the laptop or a
-runner. Ranked options:
+Sensitive material. This is the recommended plan, not started until
+signed off in the PR reply.
 
-1. `NudeNet` labeled dataset. Public, categorized (SAFE, EXPOSED_*). Best
-   for reproducibility. Skews toward adult-site stills.
-2. `LAION-NSFW` subset. Public, large, contains explicit and borderline.
-   Needs filter script and disk.
-3. Stock APIs with adult flag (Unsplash / Pexels for safe half, paid
-   permitted-adult stock for the explicit half).
-4. Synthetic via an SD-NSFW checkpoint. No real content, so filter stays
-   blind to real-world distribution.
+Images and text:
 
-For `violence_gore`, `RealLifeViolenceDataset` is the standard research
-option. For `weapons`, weapon-detection research datasets exist on Kaggle.
-`text_prompts` we author in-repo.
+- Explicit and borderline nudity: `alex000kim/nsfw_data_scraper` on
+  GitHub. Five classes (`porn`, `hentai`, `sexy`, `neutral`, `drawings`),
+  URL lists checked into the repo, run the download script to pull actual
+  images to disk. Cited baseline in most NSFW detector papers. Author
+  flag: dataset is noisy, so sample by hand into the v2 categories
+  (`porn_explicit` from `porn`, `borderline_nude_flag` from the nude end
+  of `sexy`, `borderline_safe_pass` from the bikini end of `sexy` plus
+  neutral stock).
+- Violence and gore: `RealLifeViolenceDataset` on Kaggle. 2000 videos,
+  1000 violence 1000 non-violence, extract frames.
+- Weapons: sample from a Kaggle weapon-detection dataset (firearms,
+  blades). Concrete name confirmed at build time.
+- Safe real photos: Unsplash / Pexels API with adult flag off.
+- Text prompts: author in repo, 10 harmful and 10 benign, cross the four
+  ShieldGemma text categories.
 
-Not building the dataset until the sourcing is confirmed. See PR reply.
+Not on the table: LAION-NSFW (Stanford CSAM report Dec 2023, LAION
+guidance is research-only, not production), NudeNet training set
+(detector is public, training data is not).
+
+Runs on the laptop, no cloud runner needed for the image side. Cache goes
+in a repo-ignored path.
 
 ## Blockers before rerun
 
-- Owner call on sourcing (question in the PR#20 reply).
+- Sign-off on the sourcing plan above (question in the PR#20 reply).
 - Gemma ToU accepted on HF for the account that pulls ShieldGemma.
 - Confirm whether ShieldGemma 4B runs on M1 with int8 quant or needs a
   cloud runner (Modal / RunPod).
