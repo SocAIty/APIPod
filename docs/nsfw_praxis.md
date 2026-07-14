@@ -1,175 +1,192 @@
-# NSFW praxis · Azure #164 local test
+# NSFW filter · Azure #164 · praxis v2
 
-Date: 9 Jul 2026. Python 3.11 venv.
+Reset after the review comment on `docs/nsfw_praxis.md:1` (9 Jul). The v1
+protocol used classical art nudes as the borderline set. Wrong framing: art
+is not the target signal. This v2 rewrites the scope, the model shortlist,
+and the dataset plan before rerunning any bench.
 
-## Why this service
+Date: 14 Jul 2026.
 
-Socaity is a MaaS provider, users deploy models and generate media
-through us. A NSFW filter flags nudity, gore, or other adult content
-before outputs land in someone else's app. Ticket Azure #164 wraps two
-candidate models into a callable APIPod service. This doc is the
-praxis before the service PR: install them, run them, prove they
-score sanely on safe content.
+## What we filter and why
 
-## Ticket ask
+The service runs on every AI input and every AI output. Cost per request is
+the ceiling, not accuracy in isolation. It gates public content on the
+website, so a false negative is worse than a false positive on borderline.
 
-`Azure #164 NSFW service kickoff` says: praxis test `bhky/opennsfw2` +
-`tmplink/nsfw_detector` before APIPod integration.
+Target signals:
 
-## Two model paths
+- explicit sexual content (photorealistic or generated)
+- borderline nudity on real bodies (nude beach, topless photography), not
+  paintings
+- graphic violence, gore, weapons in threatening context
+- text prompts asking for any of the above (input side)
 
-1. **`bhky/opennsfw2`** · Yahoo's OpenNSFW2 port. Available as a PyPI
-   package `opennsfw2` (v0.14.0). Under the hood: TensorFlow / Keras
-   SavedModel. Loads once, caches to disk. Returns a single float in
-   [0, 1] = NSFW probability.
-2. **`tmplink/nsfw_detector`** · 404 on HuggingFace when queried
-   9 Jul 2026 (`hf.co/tmplink/nsfw_detector` returns
-   `RepositoryNotFoundError`). The name may be a typo or the repo was
-   privated/removed. Substitute with a live, actively-maintained
-   equivalent: **`Falconsai/nsfw_image_detection`** (ViT base, image
-   classification pipeline, ~85M params, MIT).
+Pass-through, not target:
 
-## Test images
+- artistic nudity (paintings, sculpture) unless graphic
+- medical, educational, ethnographic material
+- swimwear, lingerie catalog, dance, contact sport
 
-5 synthetic safe images generated with PIL, 224x224 JPEGs, no
-real-world content that could be false-positive-y. Files are in
-`docs/example_images/nsfw_praxis/safe/`:
+## Model shortlist
 
-1. `1_plain_green.jpg`, flat brand-color rectangle.
-2. `2_circle_bw.jpg`, black circle on white.
-3. `3_text_gradient.jpg`, "SOCAITY" on a light gradient.
-4. `4_checker.jpg`, 7x7 checkerboard.
-5. `5_landscape.jpg`, blue-to-green landscape gradient.
+Four candidates, two lanes (image and text). Numbers below are from HF
+model cards fetched 14 Jul, or from the v1 bench in the appendix.
 
-All five must score as safe (low NSFW probability) or the model is
-broken for baseline content.
+| Model | Params | Modality | Categories | License | Bench notes | Role |
+|---|---|---|---|---|---|---|
+| `bhky/opennsfw2` | Yahoo openNSFW2 port, few M | image | binary NSFW prob | MIT (bhky wrapper), upstream Yahoo terms to double-check before ship | 265 ms warm CPU M1 | fast image triage |
+| `Falconsai/nsfw_image_detection` | 85.8 M ViT | image | binary normal / nsfw, 98.04% eval acc | Apache 2.0 | 200 ms warm CPU M1 | accurate image |
+| `google/shieldgemma-2-4b-it` | 4 B | image + text | sexual explicit, dangerous, violence / gore, per-policy score | Gemma ToU | no CPU numbers, TPU-trained | policy-based, escalation only |
+| `google/shieldgemma-2b` | 2 B | text only | sexual explicit, dangerous, hate, harassment | Gemma ToU | no numbers | text prompt filter |
 
-## Setup (Python 3.11 venv)
+Bhky and Falcon are the two image-side workhorses. ShieldGemma 4B is heavy
+(4 B params, no CPU latency disclosed) so it does not belong on the hot
+path. Useful when a caller asks for per-category output (nude vs violence
+vs weapon) that the two binary models cannot give. ShieldGemma 2B covers
+the text side, which the ticket did not scope originally but which the
+review comment on v1 pulled in as part of the same filter surface.
 
-Python 3.14 does not have TF/torch wheels yet (9 Jul 2026), so the
-venv must be 3.11 or 3.12. Reproduced on 3.11.14.
+## Cascade proposal
 
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install opennsfw2 tf_keras transformers torch pillow
+Two lanes.
+
+```
+image path:
+  input --> bhky (prob)
+              prob < 0.2 --> pass
+              prob > 0.8 --> flag nsfw
+              0.2..0.8   --> Falconsai
+                              normal --> pass
+                              nsfw   --> flag
+              caller asked for per-category --> ShieldGemma-2-4B-IT
+                                                with per-policy prompt
+
+text path:
+  input --> ShieldGemma-2B, run 4 policies
+              any Yes --> block prompt
+              all No  --> pass
 ```
 
-## bhky/opennsfw2 results
+Bhky is cheap enough to run on every request. Falcon runs only on the
+uncertain band, keeps p99 controlled. ShieldGemma 4B runs only on explicit
+caller ask, never on the default path. ShieldGemma 2B is a separate text
+call, single roundtrip per prompt.
 
-Run at 13:08 CET on M-series MBP. The model returns a single float in
-[0, 1] = probability the image is NSFW. Safe content should score
-near 0. Standard threshold is 0.5 (above = flag as NSFW).
+Thresholds `0.2` and `0.8` are placeholders. Actual numbers come from the
+v2 bench in Tanda B, based on the ROC on the new dataset.
+
+## Test protocol v2
+
+Categories, 10 images each unless flagged. Text prompts are 20 strings.
+
+- `safe_real`: everyday photos, no ambiguity
+- `porn_explicit`: real explicit content (5 only, minimum to sanity check)
+- `borderline_nude_flag`: nude beach, topless real bodies, non-artistic
+- `borderline_safe_pass`: bikini, swimwear, lingerie catalog, contact sport
+- `violence_gore`: real injury, gore (5 only)
+- `weapons`: firearms and blades in threatening framing
+- `text_prompts`: 20 strings, half harmful (per the 4 ShieldGemma categories)
+  and half benign
+
+Image side scored on bhky + Falconsai + ShieldGemma-2-4B-IT.
+Text side scored on ShieldGemma-2B.
+
+For each image model, report: score, latency warm, latency cold, correct
+call at threshold 0.5. For ShieldGemma 4B, report per-policy score.
+
+## Sourcing decision (open, blocks Tanda B)
+
+Sensitive material, needs an owner call before it hits the laptop or a
+runner. Ranked options:
+
+1. `NudeNet` labeled dataset. Public, categorized (SAFE, EXPOSED_*). Best
+   for reproducibility. Skews toward adult-site stills.
+2. `LAION-NSFW` subset. Public, large, contains explicit and borderline.
+   Needs filter script and disk.
+3. Stock APIs with adult flag (Unsplash / Pexels for safe half, paid
+   permitted-adult stock for the explicit half).
+4. Synthetic via an SD-NSFW checkpoint. No real content, so filter stays
+   blind to real-world distribution.
+
+For `violence_gore`, `RealLifeViolenceDataset` is the standard research
+option. For `weapons`, weapon-detection research datasets exist on Kaggle.
+`text_prompts` we author in-repo.
+
+Not building the dataset until the sourcing is confirmed. See PR reply.
+
+## Blockers before rerun
+
+- Owner call on sourcing (question in the PR#20 reply).
+- Gemma ToU accepted on HF for the account that pulls ShieldGemma.
+- Confirm whether ShieldGemma 4B runs on M1 with int8 quant or needs a
+  cloud runner (Modal / RunPod).
+
+## Frictions for the APIPod integration prompt
+
+1. `tmplink/nsfw_detector` still 404 on HF. Substitute Falconsai
+   (Apache 2.0, verified 14 Jul).
+2. TF / torch wheels for Python 3.14 do not exist yet. Worker image pins
+   3.11 or 3.12.
+3. `opennsfw2` first predict downloads weights to `~/.opennsfw2/`. Worker
+   needs a persistent cache mount or the download runs on every cold start.
+4. ShieldGemma pulls from HF gated repos. Worker HF token needs Gemma ToU
+   accepted per account.
+5. Model registration syntax changed on APIPod `origin/new_registry` branch
+   (refactor 16 Jun). Port target is that branch, not `dev`.
+
+## Open questions
+
+1. Response schema. Ship one canonical `nsfw_score` binary, or expose the
+   3 ShieldGemma categories granularly to the caller when they ask?
+2. Text lane scope. Is ShieldGemma 2B in this ticket, or split into a
+   sibling ticket? Different model family, different endpoint shape.
+
+## Appendix · v1 baseline (9 Jul)
+
+Kept as sanity check that the two image models return low scores on
+synthetic safe content and that both can fire on art nudes. Wrong dataset
+for the actual filter decision, right dataset to prove the plumbing works.
+
+### bhky on 5 safe PIL images
 
 | Image | NSFW prob | Latency (ms) | Note |
 |---|---|---|---|
-| 1_plain_green.jpg | 0.0003 | 2114.7 | cold start |
+| 1_plain_green.jpg | 0.0003 | 2114.7 | cold |
 | 2_circle_bw.jpg | 0.0119 | 242.2 | warm |
 | 3_text_gradient.jpg | 0.0113 | 276.9 | warm |
 | 4_checker.jpg | 0.0033 | 274.9 | warm |
 | 5_landscape.jpg | 0.0000 | 267.2 | warm |
 
-All 5 safe test images score well below any reasonable NSFW threshold
-(highest 0.0119, threshold typically 0.5). Cold start 2.1s, warm mean
-265ms.
+Cold start 2.1 s, warm mean 265 ms.
 
-## Falconsai/nsfw_image_detection results (substitute for tmplink)
+### Falconsai on 5 safe PIL images
 
-Run at 13:10 CET on M-series MBP. The model returns a label ({normal,
-nsfw}) with a softmax score. Safe content should get `normal` with
-high confidence.
-
-| Image | Top label | Score | Latency (ms) | Note |
+| Image | Label | Score | Latency (ms) | Note |
 |---|---|---|---|---|
-| 1_plain_green.jpg | normal | 0.9992 | 2106.6 | cold start |
+| 1_plain_green.jpg | normal | 0.9992 | 2106.6 | cold |
 | 2_circle_bw.jpg | normal | 0.9986 | 215.7 | warm |
 | 3_text_gradient.jpg | normal | 0.9986 | 179.5 | warm |
 | 4_checker.jpg | normal | 0.9967 | 204.0 | warm |
 | 5_landscape.jpg | normal | 0.9995 | 191.8 | warm |
 
-Model returns two labels: `normal` (safe) and `nsfw`. All 5 test
-images labelled `normal` with 99.67% or higher confidence. Cold start
-2.1s, warm mean 198ms.
+Cold start 2.1 s, warm mean 198 ms.
 
-## Borderline test · classical art nudes
+### bhky on 5 art nudes (wrong dataset, kept for the record)
 
-The safe-image test above only proves the models don't false-alarm.
-It doesn't prove they catch actual nudity. Running the exact same
-protocol on 5 classical art nudes from Wikimedia Commons (public
-domain) so we know the models fire when they should. Not explicit
-content, but recognisably nude subjects.
-
-The 5 images: Botticelli's Birth of Venus (painting), Michelangelo's
-David (sculpture), Titian's Venus of Urbino (painting), Rubens's
-Three Graces (painting), Doryphoros (classical Greek sculpture,
-Roman copy). Files in `docs/example_images/nsfw_praxis/borderline/`.
-
-### bhky/opennsfw2 · borderline
-
-| Image | NSFW prob | Verdict (≥0.5) |
+| Image | NSFW prob | Verdict at 0.5 |
 |---|---|---|
 | 1_botticelli_venus.jpg | 0.0626 | safe |
-| 2_michelangelo_david.jpg | 0.8723 | **flag** |
-| 3_titian_venus_urbino.jpg | 0.9829 | **flag** |
-| 4_rubens_three_graces.jpg | 0.9371 | **flag** |
+| 2_michelangelo_david.jpg | 0.8723 | flag |
+| 3_titian_venus_urbino.jpg | 0.9829 | flag |
+| 4_rubens_three_graces.jpg | 0.9371 | flag |
 | 5_doryphoros_statue.jpg | 0.4060 | safe |
 
-Flags 3 of 5. Misses Botticelli (soft rendering, model reads it as
-mostly safe) and Doryphoros (just below threshold at 0.41). Aggressive
-overall.
+### Falconsai on 5 art nudes (wrong dataset, kept for the record)
 
-### Falconsai/nsfw_image_detection · borderline
-
-| Image | Top label | Score |
+| Image | Label | Score |
 |---|---|---|
 | 1_botticelli_venus.jpg | normal | 0.9984 |
 | 2_michelangelo_david.jpg | normal | 0.9997 |
 | 3_titian_venus_urbino.jpg | nsfw | 0.6666 |
 | 4_rubens_three_graces.jpg | nsfw | 0.9997 |
 | 5_doryphoros_statue.jpg | normal | 0.9998 |
-
-Flags 2 of 5. Reads sculptures (David, Doryphoros) and the softer
-Botticelli as normal. Flags the more explicit paintings (Titian,
-Rubens). More permissive with sculpture and art, more targeted at
-explicit content.
-
-### What this contrast says
-
-Both models can detect nudity, they don't just always answer "safe".
-The two disagree in a useful way: `bhky/opennsfw2` is aggressive
-(older CNN, few false negatives, expect false positives on art
-content); `Falconsai/nsfw_image_detection` is nuanced (modern ViT,
-distinguishes classical art from explicit content). For a MaaS
-filter service, Falconsai is the better default. bhky is useful as a
-stricter secondary mode if the caller wants zero tolerance.
-
-## Gate for APIPod integration (Jul 2)
-
-Move to APIPod integration only if both:
-
-1. All 5 safe test images score as safe on both models.
-2. First-image latency < 3s (cold start), subsequent < 300ms
-   (warm), on this M-series MBP.
-
-**Both gates pass.** OK to schedule the APIPod integration in Sprint
-Jul 2 (calendar cell Wed 22 in the sprint plan).
-
-## Frictions to note in the APIPod integration prompt
-
-1. `tmplink/nsfw_detector` no longer resolves. If the intent was the
-   name shown in the ticket, either update the ticket or substitute
-   `Falconsai/nsfw_image_detection`. The Falconsai model is more
-   modern (ViT vs old CNN), maintained, and MIT.
-2. TF/torch wheels for Python 3.14 do not exist yet. APIPod worker
-   image should pin Python 3.11 or 3.12.
-3. `opennsfw2` bundles a TF SavedModel; first predict downloads
-   weights to `~/.opennsfw2/`. APIPod worker needs write access to a
-   persistent cache dir, or the download runs every cold start.
-
-## Open questions
-
-1. Should Socaity offer both models as separate services (bhky's
-   OpenNSFW2 legacy compat + Falconsai's ViT modern) or one canonical?
-2. Response schema: single float (bhky) vs multi-label with softmax
-   (Falconsai). If we ship one canonical `nsfw_score` on APIPod, we
-   pick a schema and adapt the underlying model to it.
