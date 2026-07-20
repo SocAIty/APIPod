@@ -221,10 +221,18 @@ Requirements: Docker installed, plus a CUDA/cuDNN setup if your model needs the 
 
 ```bash
 apipod analyze                # pre-deploy report: HF repo checks, catalog match, GPU recommendation
-apipod deploy                 # analyze + create a deployment draft on Socaity
+apipod deploy                 # full deploy: analyze, build, push, provision
 ```
 
-Both commands need a Socaity login (`socaity login`); everything else in APIPod works offline. `analyze` only prints a report. `deploy` runs the same analysis, resolves your declared models against the Socaity catalog, and creates a draft you finish in the [Socaity dashboard](https://www.socaity.ai) after pushing your container.
+Both commands need a Socaity login (`socaity login`); everything else in APIPod works offline. `analyze` only prints a report. `deploy` runs the analysis, resolves your declared models against the Socaity catalog, creates the deployment, builds your container, pushes it to the Socaity registry with one-time credentials, and waits until the service is live. No dashboard step and no registry account needed.
+
+Useful variants:
+
+```bash
+apipod deploy --skip-build                # push the already-built local image
+apipod deploy --resume DEPLOYMENT_ID      # retry the push for an existing deployment
+apipod deploy --resume DEPLOYMENT_ID --push-only   # only push + wait, never build
+```
 
 ## Client SDK
 
@@ -254,7 +262,6 @@ client.text_to_speech("what a time to be alive")
 
 ## Roadmap
 
-- One-command deploy execution (container push + provisioning) on top of the draft flow.
 - MCP protocol support.
 
 ---

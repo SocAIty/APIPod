@@ -70,7 +70,9 @@ class Scanner:
         if dependency_info.get("libturbojpg"):
             system_packages.append("libturbojpg")
 
-        entrypoint = entrypoint_info.get("file", target_file or "main.py")
+        entrypoint = entrypoint_info.get("file") or target_file or "main.py"
+        if not entrypoint:
+            entrypoint = "main.py"
         models, includes = self._collect_declarations(entrypoint)
 
         deployment_config = DeploymentConfig(

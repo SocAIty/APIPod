@@ -103,8 +103,14 @@ class DockerFactory:
         return dockerfile_path
 
     def build_image(self, tag: str, dockerfile_path: Path, context_dir: Path) -> bool:
-        # Using context_dir as the build context (project root)
-        cmd = ["docker", "build", "-t", tag, "-f", str(dockerfile_path), str(Path(context_dir))]
+        # Disable BuildKit attestations: they produce an OCI image index whose
+        # manifest chain breaks on re-push to a new Harbor staging repo when
+        # layer blobs are cross-mounted from a deleted prior deployment repo.
+        cmd = [
+            "docker", "build",
+            "--provenance=false", "--sbom=false",
+            "-t", tag, "-f", str(dockerfile_path), str(Path(context_dir)),
+        ]
         print(f"Running: {' '.join(cmd)}")
         try:
             subprocess.run(cmd, check=True)
