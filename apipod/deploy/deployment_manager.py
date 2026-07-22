@@ -76,7 +76,31 @@ class DeploymentManager:
 
     def build_docker_image(self, service_title: str) -> bool:
         tag = f"apipod-{service_title.lower()}"
-        return self.docker_factory.build_image(tag, self.dockerfile_path, self.project_root)
+        config = self.load_config() or {}
+        context_dir = self.resolve_docker_context(config)
+        ignorefile = self.deploy_dir / ".dockerignore"
+        return self.docker_factory.build_image(
+            tag,
+            self.dockerfile_path,
+            context_dir,
+            ignorefile=ignorefile if ignorefile.exists() and context_dir != self.project_root else None,
+        )
+
+    def resolve_docker_context(self, config: Optional[Dict[str, Any]] = None) -> Path:
+        """Return the docker build context directory.
+
+        ``apipod.json`` may set ``docker_context`` (relative to the project root)
+        when the image needs sibling repos — e.g. ``".."`` to install an
+        in-monorepo APIPod before publishing.
+        """
+        config = config if config is not None else (self.load_config() or {})
+        raw = config.get("docker_context")
+        if not raw:
+            return self.project_root
+        path = Path(raw)
+        if not path.is_absolute():
+            path = (self.project_root / path).resolve()
+        return path
 
     def check_dependencies(self) -> bool:
         """Check if project has dependency files."""

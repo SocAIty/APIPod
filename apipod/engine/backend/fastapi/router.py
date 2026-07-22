@@ -191,15 +191,28 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         if self.job_queue is None:
             return JobResultFactory.job_not_found(job_id)
 
-        job = self.job_queue.get_job(job_id)
-        if job is None:
-            return JobResultFactory.job_not_found(job_id)
-
-        ret_job = JobResultFactory.from_base_job(
-            job,
-            include_stream_link=self._include_stream_link_for(job.job_function),
-            link_prefix=self.prefix,
-        )
+        # Prefer the queue's JobResult builder when present (Redis/gateway
+        # ServiceJob rows have no local ``job_function``).
+        get_result = getattr(self.job_queue, "get_job_result", None)
+        if callable(get_result):
+            ret_job = get_result(job_id, link_prefix=self.prefix)
+            if ret_job is None:
+                return JobResultFactory.job_not_found(job_id)
+        else:
+            job = self.job_queue.get_job(job_id)
+            if job is None:
+                return JobResultFactory.job_not_found(job_id)
+            job_fn = getattr(job, "job_function", None)
+            include_stream = (
+                self._include_stream_link_for(job_fn)
+                if job_fn is not None
+                else bool(getattr(job, "supports_streaming", False))
+            )
+            ret_job = JobResultFactory.from_base_job(
+                job,
+                include_stream_link=include_stream,
+                link_prefix=self.prefix,
+            )
 
         if return_format != 'json':
             ret_job = JobResultFactory.gzip_job_result(ret_job)

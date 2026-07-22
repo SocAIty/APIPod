@@ -269,12 +269,21 @@ def run_deploy(args):
             print("Docker build failed. Fix the build and retry, or use --skip-build.")
             return
 
-    run_full_deploy(
-        config,
-        local_tag=local_tag,
-        resume_deployment_id=args.resume,
-        assume_yes=args.yes,
-    )
+    try:
+        result = run_full_deploy(
+            config,
+            local_tag=local_tag,
+            resume_deployment_id=args.resume,
+            assume_yes=args.yes,
+        )
+    except Exception as exc:
+        from socaity_cli.errors import PrivateSlotLimitError
+
+        if isinstance(exc, PrivateSlotLimitError):
+            sys.exit(1)
+        raise
+    if result is None:
+        sys.exit(1)
 
 
 def run_help(args, parsers: dict):
