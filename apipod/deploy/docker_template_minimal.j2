@@ -1,0 +1,33 @@
+FROM {{ base_image }}
+
+WORKDIR /app
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV APIPOD_ORCHESTRATOR="{{ orchestrator | default('local') }}"
+ENV APIPOD_COMPUTE="{{ compute | default('serverless') }}"
+ENV APIPOD_PROVIDER="{{ provider | default('runpod') }}"
+ENV APIPOD_HOST=0.0.0.0
+ENV APIPOD_PORT=8000
+
+EXPOSE 8000
+
+{%- if has_uv_lock %}
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+{%- elif has_pyproject %}
+COPY pyproject.toml ./
+RUN uv sync --frozen --no-dev
+{%- elif has_requirements %}
+COPY requirements.txt ./
+RUN uv pip install --system --no-cache -r requirements.txt
+{%- endif %}
+
+COPY . .
+
+{%- if has_pyproject and install_project %}
+RUN uv pip install --system --no-cache .
+{%- elif not has_uv_lock and not has_requirements and not has_pyproject %}
+RUN uv pip install --system --no-cache apipod runpod>=1.7.7
+{%- endif %}
+
+CMD ["uv", "run", "python", "{{ entrypoint_script }}", "--rp_api_host", "0.0.0.0", "--rp_api_port", "8000"]

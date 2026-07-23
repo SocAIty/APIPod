@@ -11,8 +11,11 @@ class EntrypointDetector(Detector):
 
         result = {
             "file": None,
-            "title": "apipod-service",  # Default
-            "found_config": False
+            "title": "apipod-service",
+            "found_config": False,
+            "orchestrator": "local",
+            "compute": "dedicated",
+            "provider": "localhost",
         }
 
         # 1. Prioritize user-provided target file
@@ -85,16 +88,29 @@ class EntrypointDetector(Detector):
                 for node in ast.walk(tree):
                     if isinstance(node, ast.Call):
                         if isinstance(node.func, ast.Name) and node.func.id == "APIPod":
+                            result["found_config"] = True
                             for keyword in node.keywords:
+                                value = self._ast_constant(keyword.value)
+                                if value is None:
+                                    continue
                                 if keyword.arg == "title":
-                                    if isinstance(keyword.value, ast.Constant):  # Python 3.8+
-                                        result["title"] = keyword.value.value
-                                        result["found_config"] = True
-                                    elif isinstance(keyword.value, ast.Str):  # Python < 3.8
-                                        result["title"] = keyword.value.s
-                                        result["found_config"] = True
+                                    result["title"] = value
+                                elif keyword.arg == "orchestrator":
+                                    result["orchestrator"] = value
+                                elif keyword.arg == "compute":
+                                    result["compute"] = value
+                                elif keyword.arg == "provider":
+                                    result["provider"] = value
         except Exception:
             pass
+
+    @staticmethod
+    def _ast_constant(node) -> Optional[str]:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Str):
+            return node.s
+        return None
 
     def _scan_file_for_indicators(self, file_path: str, result: Dict[str, Any]) -> bool:
         try:

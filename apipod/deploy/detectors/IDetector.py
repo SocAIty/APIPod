@@ -24,7 +24,8 @@ class Detector(ABC):
             '__pycache__', '.git', '.svn', '.hg', '.DS_Store',
             'node_modules', 'venv', 'env', '.env', '.venv',
             'build', 'dist', '.pytest_cache', '.mypy_cache',
-            '.tox', '.coverage', 'htmlcov', '.eggs', '*.egg-info'
+            '.tox', '.coverage', 'htmlcov', '.eggs', '*.egg-info',
+            'apipod-deploy',
         }
 
         # Check if any part of the path matches ignore patterns

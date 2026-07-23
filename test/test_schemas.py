@@ -79,6 +79,30 @@ def test_non_streaming_schema_accepts_stream_false_in_body():
         assert resp.status_code == 200, resp.text
 
 
+def test_serverless_schema_endpoint_enqueues_without_wrapping_enqueue_metadata():
+    """Queued schema endpoints still wrap worker output, but not gateway job params."""
+    with build_service(schema_service.register_all, simulate="serverless") as client:
+        resp = client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert "links" in body
+        assert "status" in body["links"]
+
+
+def test_enqueue_payload_detection():
+    from apipod.engine.jobs.enqueue_payload import EnqueuePayload, is_enqueue_payload
+
+    class SampleEnqueue(EnqueuePayload):
+        pass
+
+    assert is_enqueue_payload(SampleEnqueue())
+    assert not is_enqueue_payload({})
+    assert not is_enqueue_payload("done")
+
+
 def test_stream_request_field_on_streaming_schema_endpoint():
     """A schema endpoint detected as streaming keeps ``stream`` in its OpenAPI body."""
     with build_service(streaming_service.register, simulate="serverless") as client:

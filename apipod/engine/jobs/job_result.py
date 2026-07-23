@@ -44,9 +44,8 @@ class JobResult(BaseModel):
     """Public job snapshot returned by GET /status and job submissions.
 
     Unified response: same shape whether the client just submitted a job
-    (``status="queued"``) or is polling for completion. The ``status`` values
-    mirror :class:`~apipod.engine.jobs.base_job.JOB_STATUS`
-    (``queued``/``processing``/``streaming``/``finished``/``failed``/``timeout``).
+    or is polling for completion. ``status`` is a string, APIPod's local
+    queue uses :class:`~apipod.engine.jobs.base_job.JOB_STATUS` values.
 
     Null fields are excluded from the serialized response so the client
     only receives relevant information for the current job state.

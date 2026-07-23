@@ -31,6 +31,8 @@ def is_streaming_endpoint(func: Callable, schema_binding=None) -> bool:
     - return annotation contains ``Iterator`` / ``AsyncIterator`` (incl. inside a ``Union``);
     - schema endpoint whose request model has a ``stream`` field and the function body
       returns a generator (AST: ``yield``, generator expression, or under ``if request.stream``).
+
+    ``schema_binding`` is resolved from *func* when not provided by the caller.
     """
     target = inspect.unwrap(func)
     if inspect.isgeneratorfunction(target) or inspect.isasyncgenfunction(target):
