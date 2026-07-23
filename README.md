@@ -92,6 +92,34 @@ def transcribe(audio: AudioFile):
     return {"transcription": "..."}
 ```
 
+## Model Loading Presets
+
+Declare your weights; APIPod loads them at app start and the platform pre-stages them per provider (RunPod HF cache, image baking). Two built-in presets cover the transformers library:
+
+```python
+import apipod
+
+llm = apipod.TransformersLLM("Qwen/Qwen2.5-7B-Instruct")      # chat LLM: generate / stream / embed_text
+vlm = apipod.TransformersVLM("Qwen/Qwen3-VL-8B-Instruct")     # vision-language: image chat / stream / embed
+```
+
+Both pick the fastest attention backend on the machine (flash-attn 2 when installed on an Ampere+ GPU, PyTorch SDPA otherwise). Subclass `apipod.Model` for custom load logic.
+
+## Serve a Model in One Call
+
+`apipod.serve(model)` registers the standard OpenAI-compatible endpoints matching the model's methods, then starts the app. Model and service stay separate: the same instance works standalone (`model.generate(...)`) or served.
+
+```python
+import apipod
+
+model = apipod.TransformersVLM("Qwen/Qwen3-VL-8B-Instruct")
+
+if __name__ == "__main__":
+    apipod.serve(model, title="Qwen3-VL", description="...")   # /chat (image+text) + /embeddings
+```
+
+Endpoint mapping: `generate`/`stream` -> `/chat`, `embed` or `embed_text` -> `/embeddings`, `generate_image` -> `/images`. Custom `apipod.Model` subclasses participate by implementing methods with those names. For custom routes, build an `APIPod` app yourself (or pass it via `serve(model, app=app)`).
+
 ## AI Services Streamlined (OpenAI-compatible)
 
 APIPod provides built-in request/response schemas for common AI tasks (chat, TTS, image gen, etc.) that are fully OpenAI-compatible. This allows you to focus on the model logic while APIPod handles the boilerplate of validation, media parsing, and streaming.
@@ -189,15 +217,22 @@ This scans your project, picks a compatible base image (CUDA/cuDNN, ffmpeg inclu
 
 Requirements: Docker installed, plus a CUDA/cuDNN setup if your model needs the GPU.
 
-### Deploy
+### Analyze and deploy
 
 ```bash
-apipod deploy                 # coming soon
-apipod deploy serverless
-apipod deploy dedicated-azure
+apipod analyze                # pre-deploy report: HF repo checks, catalog match, GPU recommendation
+apipod deploy                 # full deploy: analyze, build, push, provision
 ```
 
-The managed `deploy` command is on the roadmap. Today, build your container and deploy it through the [Socaity dashboard](https://www.socaity.ai) — the simplest path, with auth, scaling and routing handled for you.
+Both commands need a Socaity login (`socaity login`); everything else in APIPod works offline. `analyze` only prints a report. `deploy` runs the analysis, resolves your declared models against the Socaity catalog, creates the deployment, builds your container, pushes it to the Socaity registry with one-time credentials, and waits until the service is live. No dashboard step and no registry account needed.
+
+Useful variants:
+
+```bash
+apipod deploy --skip-build                # push the already-built local image
+apipod deploy --resume DEPLOYMENT_ID      # retry the push for an existing deployment
+apipod deploy --resume DEPLOYMENT_ID --push-only   # only push + wait, never build
+```
 
 ## Client SDK
 
@@ -227,7 +262,6 @@ client.text_to_speech("what a time to be alive")
 
 ## Roadmap
 
-- `apipod deploy` managed deployment command.
 - MCP protocol support.
 
 ---

@@ -220,8 +220,20 @@ def get_schema_binding(func: Callable) -> Optional[SchemaBinding]:
 
 
 def _is_injected_param(param: inspect.Parameter) -> bool:
-    """True for parameters the framework supplies (job progress, self/cls)."""
-    return param.name in ("self", "cls") or is_injected_progress_param(param)
+    """True for parameters the framework supplies (job progress, self/cls, FastAPI deps)."""
+    if param.name in ("self", "cls") or is_injected_progress_param(param):
+        return True
+    default = param.default
+    if default is inspect.Parameter.empty:
+        return False
+    try:
+        from fastapi.params import Depends, Query, Path, Header, Cookie
+
+        # Management query params, path/header/cookie bindings, and Security/Depends
+        # are framework-injected; they are not user body inputs beside the schema.
+        return isinstance(default, (Depends, Query, Path, Header, Cookie))
+    except ImportError:
+        return False
 
 
 def _validate_schema_endpoint_signature(func: Callable, binding: SchemaBinding) -> None:
@@ -315,7 +327,7 @@ def _normalize_response_model(result: Any, response_model: Type) -> dict:
         result = {"choices": [{"index": 0, "message": {"content": result}, "finish_reason": "stop"}]}
     elif response_model is CompletionResponse and isinstance(result, str):
         result = {"choices": [{"text": result, "index": 0, "finish_reason": "stop"}]}
-    elif response_model is EmbeddingResponse and isinstance(result, list):
+    elif response_model in (EmbeddingResponse, MultimodalEmbeddingResponse) and isinstance(result, list):
         if not result:
             result = {"data": []}
         elif isinstance(result[0], (list, tuple)):

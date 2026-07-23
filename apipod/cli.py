@@ -6,20 +6,13 @@ from pathlib import Path
 from typing import Optional
 
 from apipod.deploy.deployment_manager import DeploymentManager
+from socaity_cli.prompts import input_yes_no
 
 
-def input_yes_no(question: str, default: bool = True) -> bool:
-    """Prompt user for a yes/no response with default value."""
-    valid = {"yes": True, "y": True, "ye": True, "no": False, "n": False}
-    prompt = " [Y/n] " if default else " [y/N] "
-    while True:
-        sys.stdout.write(question + prompt)
-        choice = input().lower()
-        if choice == "":
-            return default
-        if choice in valid:
-            return valid[choice]
-        sys.stdout.write("Please respond with 'yes' or 'no' (or 'y'/'n').\n")
+def _deployment_manager(args=None) -> DeploymentManager:
+    """Build a DeploymentManager, honoring ``-C`` / ``--project-dir`` when set."""
+    start_path = getattr(args, "project_dir", None) if args is not None else None
+    return DeploymentManager(start_path=start_path)
 
 
 def select_base_image(manager: DeploymentManager, config_data: dict) -> str:
@@ -84,9 +77,9 @@ def get_or_create_config(manager: DeploymentManager, target_file: Optional[str] 
     return config_data
 
 
-def run_scan(_args=None):
+def run_scan(args=None):
     """Scan the project and generate apipod.json configuration file."""
-    manager = DeploymentManager()
+    manager = _deployment_manager(args)
 
     if manager.config_exists and not input_yes_no(f"{manager.config_path.name} already exists in {manager.config_path.parent}/. Overwrite?"):
         print("Scan aborted.")
@@ -98,7 +91,7 @@ def run_scan(_args=None):
 
 def run_build(args):
     """Run the build process for creating a deployment-ready container."""
-    manager = DeploymentManager()
+    manager = _deployment_manager(args)
 
     target_file = args.file
     if target_file:
@@ -180,11 +173,14 @@ def _resolve_entrypoint(manager: DeploymentManager, entrypoint: Optional[str]) -
     return config.get("entrypoint", "main.py")
 
 
-def _load_app(entrypoint: str):
+def _load_app(entrypoint: str, project_root: Optional[Path] = None):
     """Import the entrypoint module and return its APIPod application instance."""
     from apipod.engine.base_backend import _BaseBackend
 
-    path = Path(entrypoint).resolve()
+    path = Path(entrypoint)
+    if not path.is_absolute():
+        path = (Path(project_root) if project_root else Path.cwd()) / entrypoint
+    path = path.resolve()
     if not path.exists():
         raise FileNotFoundError(f"Entrypoint '{entrypoint}' not found.")
 
@@ -210,9 +206,9 @@ def _run_service(args, simulate: Optional[str], native: bool = False):
     if native:
         os.environ["APIPOD_NATIVE"] = "true"
 
-    manager = DeploymentManager()
+    manager = _deployment_manager(args)
     entrypoint = _resolve_entrypoint(manager, args.entrypoint)
-    app = _load_app(entrypoint)
+    app = _load_app(entrypoint, project_root=manager.project_root)
 
     port = args.port or 8000
     host = args.host or "0.0.0.0"
@@ -237,22 +233,69 @@ def run_simulate(args):
     _run_service(args, simulate=target, native=args.native)
 
 
+def _load_or_scan_config(args=None) -> dict:
+    """Return the apipod.json config, scanning the project when missing or stale."""
+    manager = _deployment_manager(args)
+    config = manager.load_config() if manager.config_exists else None
+    if not config or "models" not in config:
+        print("Scanning project (models + includes)...")
+        config = manager.scan()
+        manager.save_config(config)
+    return config
+
+
+def run_analyze(args):
+    """Analyze the project against the Socaity backend (no draft, nothing persisted)."""
+    from socaity_cli.deployment import analyze_deployment
+
+    analyze_deployment(_load_or_scan_config(args))
+
+
 def run_deploy(args):
-    """Placeholder for the upcoming managed deployment command."""
-    target = args.target or "serverless"
-    print(
-        f"`apipod deploy {target}` is not available yet.\n"
-        "Deploy through the Socaity dashboard for now: https://www.socaity.ai\n"
-        f"Tip: validate the target locally first with `apipod simulate {target}`."
-    )
+    """Full deploy: analyze, draft, build, push to the registry, poll until live."""
+    from socaity_cli.deployment import run_full_deploy
+
+    if args.push_only and not args.resume:
+        print("--push-only requires --resume DEPLOYMENT_ID (the draft to push into).")
+        return
+
+    config = _load_or_scan_config(args)
+    local_tag = f"apipod-{config.get('title', 'service').lower()}"
+
+    if not args.skip_build and not args.push_only:
+        manager = _deployment_manager(args)
+        if not manager.dockerfile_exists:
+            print("No DOCKERFILE found. Run 'apipod build' first, or use --skip-build with an existing image.")
+            return
+        print(f"Building container image ({local_tag})...")
+        if not manager.build_docker_image(config.get("title", "service")):
+            print("Docker build failed. Fix the build and retry, or use --skip-build.")
+            return
+
+    try:
+        result = run_full_deploy(
+            config,
+            local_tag=local_tag,
+            resume_deployment_id=args.resume,
+            assume_yes=args.yes,
+        )
+    except Exception as exc:
+        from socaity_cli.errors import PrivateSlotLimitError
+
+        if isinstance(exc, PrivateSlotLimitError):
+            sys.exit(1)
+        raise
+    if result is None:
+        sys.exit(1)
 
 
 def run_help(args, parsers: dict):
     """Print top-level or command-specific help."""
-    if args.command:
-        parser = parsers.get(args.command)
+    help_command = getattr(args, "help_command", None)
+    if help_command:
+        parser = parsers.get(help_command)
         if parser is None:
-            print(f"Unknown command: {args.command}\n")
+            print(f"Unknown command: {help_command}\n")
             parsers["__root__"].print_help()
             sys.exit(1)
         parser.print_help()
@@ -290,8 +333,17 @@ Examples:
   apipod scan                                    Scan project and generate apipod.json
   apipod build                                   Build the deployment container
   apipod build path/to/service.py                Build from a specific Python file
-  apipod deploy                                  Deploy via Socaity (coming soon)
+  apipod analyze                                 Pre-deploy analysis via Socaity (no draft created)
+  apipod deploy                                  Analyze + create a Socaity deployment draft
+  apipod -C simple_test_service deploy           Deploy a service from a monorepo subdirectory
         """,
+    )
+    parser.add_argument(
+        "-C",
+        "--project-dir",
+        default=None,
+        metavar="DIR",
+        help="Service project directory (must contain apipod-deploy/ or pyproject.toml).",
     )
     subparsers = parser.add_subparsers(dest="command", metavar="command")
     parsers: dict = {"__root__": parser}
@@ -361,11 +413,26 @@ Examples:
     )
     parsers["build"] = build_parser
 
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Analyze the project against the Socaity platform (HF checks, catalog match, GPU hint).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  apipod analyze\n\nRequires a Socaity login (socaity login); nothing is created.",
+    )
+    parsers["analyze"] = analyze_parser
+
     deploy_parser = subparsers.add_parser(
         "deploy",
-        help="Deploy the service via Socaity (coming soon).",
+        help="Deploy to Socaity: analyze, build, push and provision in one command.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n  apipod deploy\n  apipod deploy serverless-runpod",
+        epilog=(
+            "Examples:\n"
+            "  apipod deploy\n"
+            "  apipod deploy serverless-runpod\n"
+            "  apipod -C simple_test_service deploy serverless-runpod --yes\n"
+            "  apipod deploy --skip-build              Use the already-built local image\n"
+            "  apipod deploy --resume DEPLOYMENT_ID    Retry the push for an existing draft"
+        ),
     )
     deploy_parser.add_argument(
         "target",
@@ -374,6 +441,27 @@ Examples:
         metavar="TARGET",
         help="Deployment target '{compute}-{provider}' (default: serverless).",
     )
+    deploy_parser.add_argument(
+        "--resume",
+        default=None,
+        metavar="DEPLOYMENT_ID",
+        help="Skip analyze/draft and push into an existing deployment attempt.",
+    )
+    deploy_parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="Do not rebuild the container; push the existing local image.",
+    )
+    deploy_parser.add_argument(
+        "--push-only",
+        action="store_true",
+        help="With --resume: only push and poll, never build or create drafts.",
+    )
+    deploy_parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Non-interactive: skip confirmations (CI / automated runs).",
+    )
     parsers["deploy"] = deploy_parser
 
     help_parser = subparsers.add_parser(
@@ -381,7 +469,7 @@ Examples:
         help="Show help for apipod or a specific command.",
     )
     help_parser.add_argument(
-        "command",
+        "help_command",
         nargs="?",
         default=None,
         metavar="COMMAND",
@@ -405,6 +493,8 @@ def main():
         run_scan(args)
     elif args.command == "build":
         run_build(args)
+    elif args.command == "analyze":
+        run_analyze(args)
     elif args.command == "deploy":
         run_deploy(args)
     elif args.command == "simulate":

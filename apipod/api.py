@@ -1,13 +1,7 @@
 from typing import Optional, Tuple, Union
 
+from apipod.common import settings
 from apipod.common.constants import COMPUTE, PROVIDER
-from apipod.common.settings import (
-    APIPOD_COMPUTE,
-    APIPOD_NATIVE,
-    APIPOD_PROVIDER,
-    APIPOD_SIMULATE,
-    IS_MANAGED_DEPLOYMENT,
-)
 from apipod.engine.backend.fastapi.router import SocaityFastAPIRouter
 from apipod.engine.backend.runpod.router import SocaityRunpodRouter
 from apipod.engine.streaming.local_stream_store import LocalStreamStore
@@ -30,27 +24,37 @@ def APIPod(
     Socaity is the implicit orchestrator, so you never wire infrastructure by hand.
     You only pick how the service should run *locally*:
 
-    - **Development** (default, ``APIPod()``): plain FastAPI — the fastest loop.
+    - **Development** (default, ``APIPod()``): plain FastAPI — the fastest loop
+      (env defaults ``APIPOD_COMPUTE=dedicated``, ``APIPOD_PROVIDER=localhost``).
     - **Simulation** (``simulate="{compute}-{provider}"``): emulate a deployment
       locally. The target collapses compute + provider, e.g. ``"serverless"``,
       ``"serverless-runpod"``, ``"dedicated-azure"``. Compute defaults to
       ``serverless``. ``direct=True`` bypasses Socaity to emulate the provider's
       own serverless worker (currently RunPod).
+    - **Deployed image** (``APIPOD_COMPUTE`` / ``APIPOD_PROVIDER`` set, e.g. by
+      the Dockerfile or platform): select the real backend. User serverless
+      RunPod deploys do **not** need a cert — ``serverless`` + ``runpod`` yields
+      the real RunPod worker.
 
-    In a **managed deployment** (``SOCAITY_DEPLOYMENT_CERT`` verified) ``simulate``
-    and ``direct`` are ignored: Socaity injects ``APIPOD_COMPUTE`` /
-    ``APIPOD_PROVIDER`` and the real backend is selected from them.
+    ``SOCAITY_DEPLOYMENT_CERT`` marks an *official* staff deployment
+    (``IS_MANAGED_DEPLOYMENT``). It does not gate user backend selection; when
+    present it only forces the env-based path (ignores local ``simulate`` /
+    ``direct``).
 
     Args:
         simulate: deployment target to emulate, ``"{compute}-{provider}"``.
-            ``None`` runs plain FastAPI for development.
+            ``None`` uses env compute/provider (development defaults or deploy).
         direct: emulate the provider's native serverless worker instead of the
             Socaity job-queue emulation. Only affects ``serverless-runpod``.
     """
-    if IS_MANAGED_DEPLOYMENT:
-        backend_class, use_job_queue, runpod_simulate = _resolve_managed()
-    else:
+    if settings.IS_MANAGED_DEPLOYMENT:
+        # Official staff deploy: always honor platform env, ignore simulate.
+        backend_class, use_job_queue, runpod_simulate = _resolve_from_env()
+    elif simulate is not None or settings.APIPOD_SIMULATE:
         backend_class, use_job_queue, runpod_simulate = _resolve_intent(simulate, direct)
+    else:
+        # User deploy image or local development defaults.
+        backend_class, use_job_queue, runpod_simulate = _resolve_from_env()
 
     if backend_class is SocaityRunpodRouter:
         return SocaityRunpodRouter(simulate=runpod_simulate, *args, **kwargs)
@@ -65,21 +69,15 @@ def APIPod(
         job_queue = JobQueue()
 
     if use_job_queue and "stream_store" not in kwargs:
-        
         kwargs["stream_store"] = LocalStreamStore()
 
     return SocaityFastAPIRouter(job_queue=job_queue, *args, **kwargs)
 
 
 def _resolve_intent(simulate: Optional[str], direct: Optional[bool]) -> _Resolution:
-    """Resolve a local run (development or simulation) into a backend selection."""
-    target = APIPOD_SIMULATE if simulate is None else simulate
-
-    # Development: no simulation requested -> plain FastAPI.
-    if simulate is None and not APIPOD_SIMULATE:
-        return SocaityFastAPIRouter, False, False
-
-    direct = APIPOD_NATIVE if direct is None else bool(direct)
+    """Resolve a local simulation into a backend selection."""
+    target = settings.APIPOD_SIMULATE if simulate is None else simulate
+    direct = settings.APIPOD_NATIVE if direct is None else bool(direct)
     compute, provider = _parse_target(target)
 
     if compute is COMPUTE.DEDICATED:
@@ -100,10 +98,14 @@ def _resolve_intent(simulate: Optional[str], direct: Optional[bool]) -> _Resolut
     return SocaityFastAPIRouter, True, False
 
 
-def _resolve_managed() -> _Resolution:
-    """Pick the real production backend from the env vars Socaity injects."""
-    compute = COMPUTE(APIPOD_COMPUTE)
-    provider = PROVIDER(APIPOD_PROVIDER)
+def _resolve_from_env() -> _Resolution:
+    """Pick the real backend from ``APIPOD_COMPUTE`` / ``APIPOD_PROVIDER``.
+
+    Used for deployed images (user or official) and for local development
+    defaults (``dedicated`` + ``localhost`` → plain FastAPI).
+    """
+    compute = COMPUTE(settings.APIPOD_COMPUTE)
+    provider = PROVIDER(settings.APIPOD_PROVIDER)
 
     if compute is COMPUTE.SERVERLESS and provider is PROVIDER.RUNPOD:
         return SocaityRunpodRouter, False, False  # real serverless worker
@@ -129,4 +131,3 @@ def _parse_target(target: str) -> Tuple[COMPUTE, Optional[PROVIDER]]:
         return compute, PROVIDER(provider_str)
     except ValueError:
         raise ValueError(f"Invalid provider '{provider_str}'. Choose from: {[p.value for p in PROVIDER]}")
-

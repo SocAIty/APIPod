@@ -19,13 +19,14 @@ It sits in an ecosystem of three packages:
 ```
 apipod/
 ├── api.py                  # APIPod() factory: resolves intent → backend instance
+├── serve.py                # serve(model): capability-based endpoint registration + start
 ├── common/
 │   ├── settings.py         # Env-driven config (APIPOD_SIMULATE / _DIRECT / _COMPUTE / _PROVIDER, cert, host, port)
 │   ├── constants.py        # Enums: COMPUTE, PROVIDER, SERVER_HEALTH
 │   └── schemas/
 │       └── __init__.py     # Re-exports from socaity-schemas (OpenAI-compatible request/response + FileModel)
 ├── engine/
-│   ├── base_backend.py     # Shared backend base (title, version, health)
+│   ├── base_backend.py     # Shared backend base (title, summary, description, version, health)
 │   ├── endpoint_config.py  # EndpointExecutionPlan + configurator (how to register an endpoint)
 │   ├── backend/
 │   │   ├── fastapi/        # SocaityFastAPIRouter + file handling, streaming mixin, exceptions
@@ -35,8 +36,38 @@ apipod/
 │   ├── queue/              # JobQueue, JobStore, _QueueMixin (enqueue instead of block)
 │   ├── streaming/          # StreamStore port + LocalStreamStore + StreamProducer
 │   └── signatures/         # Signature inspection policies (media params, Body vs Form, …)
+├── models/
+│   ├── includes.py         # include / include_hf handles (declare bytes, resolve lazily)
+│   ├── model.py            # Model base: load()/warmup(), registry, app-start loading
+│   └── transformers/       # Transformers base + TransformersLLM / TransformersVLM presets
 └── deploy/                 # `apipod build`: Dockerfile generation, dependency/CUDA detection
 ```
+
+### Model presets (`apipod/models/transformers`)
+
+``Transformers(Model)`` centralizes what every HF-backed preset shares: include
+normalization, ``from_pretrained`` kwargs (``dtype="auto"``, ``device_map="auto"``
+and the fastest available attention backend: ``flash_attention_2`` when the
+compiled ``flash_attn`` package plus CUDA are present, ``sdpa`` otherwise) and
+the threaded ``TextIteratorStreamer`` loop. ``TransformersLLM`` (causal chat +
+``embed_text``) and ``TransformersVLM`` (image+text chat + multimodal ``embed``)
+are the concrete presets. ``TransformersVLM`` resolves the model class through
+the auto-class ladder ``AutoModelForImageTextToText`` →
+``AutoModelForMultimodalLM``, which covers Qwen-VL generations as well as
+encoder-free unified models like Gemma 4.
+
+### serve() (`apipod/serve.py`)
+
+``apipod.serve(model)`` maps the model's inference methods to standard schema
+endpoints and starts the app: ``generate``/``stream`` → ``/chat`` (a
+``VLMChatRequest`` with an ``images`` list when ``generate`` accepts an
+``images`` parameter), ``embed`` → multimodal ``/embeddings``, ``embed_text`` →
+text ``/embeddings``, ``generate_image`` → ``/images``. Detection reads methods
+from ``type(model)`` (never the instance) so the lazy-load ``__getattr__`` of
+``Model`` is not triggered. Custom ``Model`` subclasses opt in by naming their
+methods accordingly; service files keep ``serve()`` under
+``if __name__ == "__main__":`` so ``apipod scan`` can import them without
+starting a server.
 
 ## Core principles
 
@@ -56,16 +87,23 @@ Three concepts describe *where and how* a service runs. Historically developers 
 
 A developer never assembles this matrix by hand. They express a single **intent**:
 
-- **Development** (`APIPod()` / `apipod start`) — plain FastAPI, the fastest loop.
+- **Development** (`APIPod()` / `apipod start`) — plain FastAPI, the fastest loop (env defaults `APIPOD_COMPUTE=dedicated`, `APIPOD_PROVIDER=localhost`).
 - **Simulation** (`APIPod(simulate="{compute}-{provider}")` / `apipod simulate ...`) — emulate a deployment **locally**, no code changes. The target string collapses compute + provider (`serverless`, `serverless-runpod`, `dedicated-azure`); compute defaults to `serverless`. `direct=True` emulates the provider's native worker instead of the Socaity queue.
-- **Managed deployment** — when the service runs on the platform, Socaity sets `SOCAITY_DEPLOYMENT_CERT` (SHA1 of a shared secret). When that cert verifies (`IS_MANAGED_DEPLOYMENT`), `simulate`/`direct` are ignored and the **real** backend is selected from the `APIPOD_COMPUTE` / `APIPOD_PROVIDER` env vars Socaity injects — so the serverless-RunPod path runs the *real* worker, not the emulator.
+- **Deployed image** — the Dockerfile / platform sets `APIPOD_COMPUTE` / `APIPOD_PROVIDER`. User serverless RunPod deploys use those alone (no cert required) so the **real** RunPod worker is selected.
+- **Official staff deployment** — `SOCAITY_DEPLOYMENT_CERT` (SHA1 of a shared secret) sets `IS_MANAGED_DEPLOYMENT`. This marks an official SocAIty deployment; it does **not** gate user backend selection. When present it only forces the env-based path (ignores local `simulate` / `direct`).
 
 ## Backend resolution
 
-`APIPod()` in `api.py` is not a class — it is a factory. It resolves the intent (managed → `_resolve_managed`, otherwise → `_resolve_intent`) into a `(backend_class, use_job_queue, runpod_simulate)` triple and returns one of:
+`APIPod()` in `api.py` is not a class — it is a factory. Resolution order:
+
+1. Official cert present → `_resolve_from_env` (ignore simulate).
+2. Local `simulate` / `APIPOD_SIMULATE` set → `_resolve_intent`.
+3. Otherwise → `_resolve_from_env` (user deploy env or development defaults).
+
+That yields a `(backend_class, use_job_queue, runpod_simulate)` triple and returns one of:
 
 - **`SocaityFastAPIRouter`** — an `APIRouter` subclass bound to a `FastAPI` app. Used for development and dedicated compute (no queue), and for the serverless emulation (paired with an in-memory `JobQueue` + `LocalStreamStore` and a background worker thread).
-- **`SocaityRunpodRouter`** — a path-based dispatcher for RunPod serverless. There is no HTTP layer: RunPod delivers a JSON job whose `input.path` selects the registered function; the router converts files, injects `JobProgress`, executes, and returns a serialized `JobResult` (or a generator for streaming). It can also synthesize an OpenAPI schema by replaying the FastAPI signature conversion, so fastSDK clients can be generated against serverless deployments too. Its `simulate` flag chooses between RunPod's local API emulator (`apipod simulate serverless-runpod --native`) and the real worker (managed deployment).
+- **`SocaityRunpodRouter`** — a path-based dispatcher for RunPod serverless. There is no HTTP layer: RunPod delivers a JSON job whose `input.path` selects the registered function; the router converts files, injects `JobProgress`, executes, and returns a serialized `JobResult` (or a generator for streaming). It can also synthesize an OpenAPI schema by replaying the FastAPI signature conversion, so fastSDK clients can be generated against serverless deployments too. Its `simulate` flag chooses between RunPod's local API emulator (`apipod simulate serverless-runpod --native`) and the real worker (deployed `serverless` + `runpod`).
 
 ## The endpoint pipeline (FastAPI backend)
 
@@ -137,7 +175,7 @@ The **stream store** is the pluggable backend that buffers a job's chunks betwee
 
 ### Deployment
 
-`apipod build` (see `deploy/`) scans the project (entrypoint, dependencies, CUDA requirements) and generates a Dockerfile from compatible templates. The resulting container runs unchanged on dedicated hosts, on socaity.ai, or on RunPod serverless — only the env vars differ: Socaity injects `SOCAITY_DEPLOYMENT_CERT` plus `APIPOD_COMPUTE` / `APIPOD_PROVIDER` to select the real backend, while locally you drive the same paths with `APIPOD_SIMULATE` / `APIPOD_NATIVE` (set for you by `apipod simulate`).
+`apipod build` (see `deploy/`) scans the project (entrypoint, dependencies, CUDA requirements) and generates a Dockerfile from compatible templates. The resulting container runs unchanged on dedicated hosts, on socaity.ai, or on RunPod serverless — only the env vars differ: deployed images set `APIPOD_COMPUTE` / `APIPOD_PROVIDER` to select the real backend (user deploys need no cert); `SOCAITY_DEPLOYMENT_CERT` is optional for official staff images. Locally you drive the same paths with `APIPOD_SIMULATE` / `APIPOD_NATIVE` (set for you by `apipod simulate`).
 
 ## Request lifecycle, end to end
 

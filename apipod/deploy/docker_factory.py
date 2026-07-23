@@ -164,10 +164,43 @@ class DockerFactory:
             print(f"Created {path}")
         return path
 
-    def build_image(self, tag: str, dockerfile_path: Path, context_dir: Path) -> bool:
+    def build_image(
+        self,
+        tag: str,
+        dockerfile_path: Path,
+        context_dir: Path,
+        ignorefile: Optional[Path] = None,
+    ) -> bool:
+        # Ensure the project root has a .dockerignore for default (non-widened)
+        # builds. Widened contexts still stage ``ignorefile`` below.
         self.write_project_dockerignore()
-        cmd = ["docker", "build", "-t", tag, "-f", str(dockerfile_path), str(Path(context_dir))]
+        # Disable BuildKit attestations: they produce an OCI image index whose
+        # manifest chain breaks on re-push to a new Harbor staging repo when
+        # layer blobs are cross-mounted from a deleted prior deployment repo.
+        context_dir = Path(context_dir)
+        cmd = [
+            "docker", "build",
+            "--provenance=false", "--sbom=false",
+            "-t", tag, "-f", str(dockerfile_path),
+            str(context_dir),
+        ]
         print(f"Running: {' '.join(cmd)}")
+
+        # Docker only reads ``<context>/.dockerignore``. When the build uses a
+        # widened context (e.g. monorepo root) stage the project ignorefile there
+        # for the duration of the build, then restore whatever was there before.
+        context_ignore = context_dir / ".dockerignore"
+        previous_ignore: Optional[str] = None
+        wrote_ignore = False
+        if ignorefile is not None and Path(ignorefile).is_file():
+            if context_ignore.exists():
+                previous_ignore = context_ignore.read_text(encoding="utf-8")
+            context_ignore.write_text(
+                Path(ignorefile).read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            wrote_ignore = True
+            print(f"Staged {ignorefile} -> {context_ignore} for this build")
+
         try:
             subprocess.run(cmd, check=True)
             print("Build completed successfully.")
@@ -176,4 +209,10 @@ class DockerFactory:
             print("Error: 'docker' command not found.")
         except subprocess.CalledProcessError:
             print("Docker build failed.")
+        finally:
+            if wrote_ignore:
+                if previous_ignore is None:
+                    context_ignore.unlink(missing_ok=True)
+                else:
+                    context_ignore.write_text(previous_ignore, encoding="utf-8")
         return False
