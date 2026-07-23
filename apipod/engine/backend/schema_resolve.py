@@ -220,8 +220,20 @@ def get_schema_binding(func: Callable) -> Optional[SchemaBinding]:
 
 
 def _is_injected_param(param: inspect.Parameter) -> bool:
-    """True for parameters the framework supplies (job progress, self/cls)."""
-    return param.name in ("self", "cls") or is_injected_progress_param(param)
+    """True for parameters the framework supplies (job progress, self/cls, FastAPI deps)."""
+    if param.name in ("self", "cls") or is_injected_progress_param(param):
+        return True
+    default = param.default
+    if default is inspect.Parameter.empty:
+        return False
+    try:
+        from fastapi.params import Depends, Query, Path, Header, Cookie
+
+        # Management query params, path/header/cookie bindings, and Security/Depends
+        # are framework-injected; they are not user body inputs beside the schema.
+        return isinstance(default, (Depends, Query, Path, Header, Cookie))
+    except ImportError:
+        return False
 
 
 def _validate_schema_endpoint_signature(func: Callable, binding: SchemaBinding) -> None:
