@@ -238,10 +238,14 @@ def _is_injected_param(param: inspect.Parameter) -> bool:
 
 def _validate_schema_endpoint_signature(func: Callable, binding: SchemaBinding) -> None:
     """Reject schema endpoints that declare user parameters besides the request schema."""
+    from apipod.engine.signatures.policies import FastAPISignaturePolicies
+
     extra = [
         param.name
         for param in inspect.signature(func).parameters.values()
-        if param.name != binding.param_name and not _is_injected_param(param)
+        if param.name != binding.param_name
+        and not _is_injected_param(param)
+        and not FastAPISignaturePolicies.is_fastapi_dependency(param)
     ]
     if extra:
         raise TypeError(

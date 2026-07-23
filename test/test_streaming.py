@@ -22,6 +22,7 @@ import pytest
 from conftest import build_service
 from services.streaming_service import CHAT_TOKENS, TEXT_TOKENS, VIDEO_FRAMES
 from services import streaming_service
+from apipod.engine.jobs.base_job import JOB_STATUS, STREAM_WAIT_STATUSES
 
 
 # --------------------------------------------------------------------------- #
@@ -47,6 +48,16 @@ def _sse_payloads(client, stream_url):
             if line.startswith("data: "):
                 payloads.append(line[len("data: "):])
     return payloads
+
+
+def test_stream_wait_statuses_match_local_lifecycle():
+    assert STREAM_WAIT_STATUSES == frozenset(
+        {
+            JOB_STATUS.QUEUED.value,
+            JOB_STATUS.PROCESSING.value,
+            JOB_STATUS.STREAMING.value,
+        }
+    )
 
 
 def test_stream_text_tokens(stream_client):
