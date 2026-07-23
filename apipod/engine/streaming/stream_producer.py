@@ -21,7 +21,7 @@ worker without leaking schema details into the queue:
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator, List
+from typing import Any, Callable, Iterable, Iterator, List
 
 
 @dataclass
@@ -29,5 +29,7 @@ class StreamProducer:
     raw_chunks: Iterator[Any]
     to_chunk: Callable[[Any], str]
     aggregate: Callable[[List[Any]], Any]
-    closing: List[str] = field(default_factory=list)
+    # May be a generator: closing chunks (e.g. finish_reason) can depend on the
+    # consumed stream, so they are built lazily after raw_chunks is drained.
+    closing: Iterable[str] = field(default_factory=list)
     media_type: str = "text/event-stream"

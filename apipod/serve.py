@@ -119,17 +119,51 @@ def register_model_endpoints(app: APIPod, model: Model) -> List[str]:
 # carries the handlers its model supports.
 # ----------------------------------------------------------------------------
 
+def _chat_kwargs(request: ChatCompletionRequest, method) -> dict:
+    """Map the request onto the model method's signature.
+
+    Only parameters the method declares are forwarded, so custom models with
+    the minimal ``generate(messages, temperature, max_tokens)`` shape keep
+    working. Requesting a capability the model does not implement (tools,
+    logprobs) fails loudly instead of being silently dropped.
+    """
+    kwargs = {
+        "messages": request.messages,
+        "temperature": request.temperature,
+        "max_tokens": request.max_completion_tokens or request.max_tokens or 512,
+        "top_p": request.top_p,
+        "stop": request.stop,
+        "seed": request.seed,
+        "tools": request.tools,
+        "tool_choice": request.tool_choice,
+        "logprobs": request.logprobs,
+        "top_logprobs": request.top_logprobs,
+    }
+    supported = _method_params(method)
+    unsupported = [
+        name for name in ("tools", "logprobs")
+        if kwargs.get(name) and name not in supported
+    ]
+    if unsupported:
+        raise ValueError(
+            f"{' and '.join(unsupported)} not supported here: {method.__qualname__} does not "
+            "accept these parameters. Logprobs are only available on non-streaming requests."
+        )
+    return {name: value for name, value in kwargs.items() if name in supported}
+
+
 def _llm_chat(model: Model):
     def chat(request: ChatCompletionRequest):
         """Chat completions: multi-turn conversations, instruction following and text generation.
 
-        Send OpenAI-style messages; set stream=true for token-by-token
-        server-sent events.
+        Send OpenAI-style messages; supports tools (function calling),
+        logprobs, seed, stop sequences and reasoning output. Set stream=true
+        for token-by-token server-sent events.
         """
-        max_tokens = request.max_tokens or 512
         if request.stream:
-            return model.stream(request.messages, request.temperature, max_tokens)
-        return model.generate(request.messages, request.temperature, max_tokens)
+            # Generator expression keeps the endpoint statically detectable as streaming.
+            return (delta for delta in model.stream(**_chat_kwargs(request, _class_method(model, "stream"))))
+        return model.generate(**_chat_kwargs(request, _class_method(model, "generate")))
 
     return chat
 
@@ -144,10 +178,12 @@ def _vlm_chat(model: Model):
         all text from this receipt as markdown"), image description, document
         parsing and chart reading. Set stream=true for server-sent events.
         """
-        max_tokens = request.max_tokens or 512
         if request.stream:
-            return model.stream(request.messages, request.images, request.temperature, max_tokens)
-        return model.generate(request.messages, request.images, request.temperature, max_tokens)
+            return (
+                delta
+                for delta in model.stream(images=request.images, **_chat_kwargs(request, _class_method(model, "stream")))
+            )
+        return model.generate(images=request.images, **_chat_kwargs(request, _class_method(model, "generate")))
 
     return chat
 

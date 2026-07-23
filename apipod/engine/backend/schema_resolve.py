@@ -32,7 +32,6 @@ from media_toolkit import MediaFile
 
 from socaity_schemas import (
     ChatCompletionChunk,
-    ChatCompletionChoice,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatDelta,
@@ -60,6 +59,7 @@ from socaity_schemas import (
     VoiceConversionResponse,
     VoiceResponse,
 )
+from apipod.common.chat_parsing import parse_chat_output
 from apipod.engine.files.base_file_mixin import parse_schema_media_fields
 from apipod.engine.signatures.analysis import is_injected_progress_param
 
@@ -312,7 +312,10 @@ def _normalize_response_model(result: Any, response_model: Type) -> dict:
 
     # Shorthand raw returns authors may use instead of a full response dict.
     if response_model is ChatCompletionResponse and isinstance(result, str):
-        result = {"choices": [{"index": 0, "message": {"content": result}, "finish_reason": "stop"}]}
+        # Raw model text may carry reasoning / tool-call tags; parse into a typed message.
+        message = parse_chat_output(result)
+        finish_reason = "tool_calls" if message.get("tool_calls") else "stop"
+        result = {"choices": [{"index": 0, "message": message, "finish_reason": finish_reason}]}
     elif response_model is CompletionResponse and isinstance(result, str):
         result = {"choices": [{"text": result, "index": 0, "finish_reason": "stop"}]}
     elif response_model in (EmbeddingResponse, MultimodalEmbeddingResponse) and isinstance(result, list):
@@ -372,22 +375,29 @@ SSE_DONE = "data: [DONE]\n\n"
 
 def _to_sse(chunk: BaseModel) -> str:
     """Serialize a chunk model into a single server-sent-event data line."""
-    return f"data: {chunk.model_dump_json()}\n\n"
+    return f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
 
 
-def _build_chat_chunk(chunk_id: str, created: int, content: Optional[str], finish_reason: Optional[str]) -> ChatCompletionChunk:
+def _build_chat_chunk(chunk_id: str, created: int, delta: Any, finish_reason: Optional[str]) -> ChatCompletionChunk:
+    """Wrap one raw delta into a chunk. Raw deltas are content strings or ChatDelta-shaped dicts."""
+    if delta is None:
+        chat_delta = ChatDelta()
+    elif isinstance(delta, str):
+        chat_delta = ChatDelta(content=delta)
+    else:
+        chat_delta = ChatDelta.model_validate(delta)
     return ChatCompletionChunk(
         id=chunk_id,
         created=created,
-        choices=[ChatStreamChoice(index=0, delta=ChatDelta(content=content), finish_reason=finish_reason)],
+        choices=[ChatStreamChoice(index=0, delta=chat_delta, finish_reason=finish_reason)],
     )
 
 
 @dataclass(frozen=True)
 class StreamChunkSpec:
-    """How raw token deltas of a streaming schema are wrapped into chunk events."""
+    """How raw deltas of a streaming schema are wrapped into chunk events."""
     id_prefix: str
-    build: Callable[[str, int, Optional[str], Optional[str]], BaseModel]
+    build: Callable[[str, int, Any, Optional[str]], BaseModel]
 
 
 # Schema tags whose token stream is wrapped into a standardized chunk SSE stream.
@@ -399,12 +409,14 @@ STREAM_CHUNK_SPECS: dict[str, StreamChunkSpec] = {
 
 class SchemaStreamSerializer:
     """
-    Turns the raw token deltas yielded by a streaming schema endpoint into its
+    Turns the raw deltas yielded by a streaming schema endpoint into its
     standardized chunk SSE stream (e.g. ``ChatCompletionChunk``).
 
-    The endpoint only yields text tokens; APIPod owns the envelope: a stable
-    chunk id, the ``created`` timestamp and the ``object`` discriminator are
-    generated out of the box, closed by a final delta and the ``[DONE]`` sentinel.
+    Endpoints yield content tokens (str) and/or typed delta dicts (reasoning,
+    tool calls); APIPod owns the envelope: a stable chunk id, the ``created``
+    timestamp and the ``object`` discriminator are generated out of the box,
+    closed by a final delta and the ``[DONE]`` sentinel. The closing chunk
+    reports ``finish_reason='tool_calls'`` when tool call deltas were seen.
     """
 
     def __init__(self, binding: SchemaBinding):
@@ -414,18 +426,21 @@ class SchemaStreamSerializer:
         self._build = spec.build
         self._chunk_id = f"{spec.id_prefix}-{uuid.uuid4().hex[:8]}"
         self._created = int(datetime.now(timezone.utc).timestamp())
+        self._finish_reason = "stop"
 
-    def delta(self, content: str) -> str:
-        """Serialize a content token into a chunk SSE event."""
-        return _to_sse(self._build(self._chunk_id, self._created, content, None))
+    def delta(self, raw: Any) -> str:
+        """Serialize one raw delta (content str or ChatDelta-shaped dict) into a chunk SSE event."""
+        if isinstance(raw, dict) and raw.get("tool_calls"):
+            self._finish_reason = "tool_calls"
+        return _to_sse(self._build(self._chunk_id, self._created, raw, None))
 
     def finish(self) -> str:
-        """Serialize the closing chunk (``finish_reason='stop'``)."""
-        return _to_sse(self._build(self._chunk_id, self._created, None, "stop"))
+        """Serialize the closing chunk. Call after the deltas have been consumed."""
+        return _to_sse(self._build(self._chunk_id, self._created, None, self._finish_reason))
 
-    def stream(self, tokens: Iterable[str]) -> Iterator[str]:
-        """Wrap a synchronous token iterable into the full chunk SSE stream (deltas, closing chunk, [DONE])."""
-        for token in tokens:
-            yield self.delta(token)
+    def stream(self, deltas: Iterable[Any]) -> Iterator[str]:
+        """Wrap a synchronous delta iterable into the full chunk SSE stream (deltas, closing chunk, [DONE])."""
+        for raw in deltas:
+            yield self.delta(raw)
         yield self.finish()
         yield SSE_DONE

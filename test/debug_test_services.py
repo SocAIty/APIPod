@@ -31,17 +31,19 @@ HOST = "127.0.0.1"
 #   serverless:        APIPOD_SIMULATE=serverless
 #   serverless-runpod: APIPOD_SIMULATE=serverless-runpod
 #   runpod native:     APIPOD_SIMULATE=serverless-runpod  APIPOD_NATIVE=true
+# Port: APIPOD_DEBUG_PORT (default 8000; used by test suites to launch isolated instances).
 SIMULATE = os.environ.get("APIPOD_SIMULATE") or None
 DIRECT = os.environ.get("APIPOD_NATIVE", "").strip().lower() in ("1", "true", "yes") or None
+PORT = int(os.environ.get("APIPOD_DEBUG_PORT", "8000"))
 
 
-def launch_core(port: int = 8000, host: str = HOST, simulate: str = SIMULATE, direct: bool = DIRECT) -> None:
+def launch_core(port: int = PORT, host: str = HOST, simulate: str = SIMULATE, direct: bool = DIRECT) -> None:
     app = APIPod(simulate=simulate, direct=direct)
     core_service.register(app)
     app.start(host=host, port=port)
 
 
-def launch_schemas(port: int = 8000, host: str = HOST, simulate: str = SIMULATE, direct: bool = DIRECT) -> None:
+def launch_schemas(port: int = PORT, host: str = HOST, simulate: str = SIMULATE, direct: bool = DIRECT) -> None:
     app = APIPod(simulate=simulate, direct=direct)
     schema_service.register_all(app)
     schema_service.register_extended(app)
@@ -49,13 +51,13 @@ def launch_schemas(port: int = 8000, host: str = HOST, simulate: str = SIMULATE,
     app.start(host=host, port=port)
 
 
-def launch_streaming(port: int = 8000, host: str = HOST, simulate: str = SIMULATE, direct: bool = DIRECT) -> None:
+def launch_streaming(port: int = PORT, host: str = HOST, simulate: str = SIMULATE, direct: bool = DIRECT) -> None:
     app = APIPod(simulate=simulate, direct=direct)
     streaming_service.register(app)
     app.start(host=host, port=port)
 
 
-def launch_all(port: int = 8000, host: str = HOST, simulate: str = SIMULATE, direct: bool = DIRECT) -> None:
+def launch_all(port: int = PORT, host: str = HOST, simulate: str = SIMULATE, direct: bool = DIRECT) -> None:
     app = APIPod(simulate=simulate, direct=direct, title="APIPod test services (all)")
 
     core = APIPod(simulate=simulate, direct=direct)
