@@ -144,6 +144,27 @@ class DockerFactory:
         print(f"Dockerfile created at {dockerfile_path}")
         return dockerfile_path
 
+    def write_project_dockerignore(self) -> Path:
+        path = self.project_root / ".dockerignore"
+        lines = [
+            "apipod-deploy/",
+            ".git/",
+            ".venv/",
+            "venv/",
+            "__pycache__/",
+            "*.pyc",
+            ".pytest_cache/",
+            ".mypy_cache/",
+            "dist/",
+            "build/",
+            "*.egg-info/",
+            "",
+        ]
+        if not path.exists():
+            path.write_text("\n".join(lines), encoding="utf-8")
+            print(f"Created {path}")
+        return path
+
     def build_image(
         self,
         tag: str,
@@ -151,6 +172,9 @@ class DockerFactory:
         context_dir: Path,
         ignorefile: Optional[Path] = None,
     ) -> bool:
+        # Ensure the project root has a .dockerignore for default (non-widened)
+        # builds. Widened contexts still stage ``ignorefile`` below.
+        self.write_project_dockerignore()
         # Disable BuildKit attestations: they produce an OCI image index whose
         # manifest chain breaks on re-push to a new Harbor staging repo when
         # layer blobs are cross-mounted from a deleted prior deployment repo.
