@@ -69,22 +69,70 @@ class TransformersVLM(Transformers):
     # Chat
     # ------------------------------------------------------------------
 
-    def generate(self, messages, images=None, temperature: float = 0.7, max_tokens: int = 512) -> str:
-        inputs = self._chat_inputs(messages, images)
-        output = self.net.generate(**inputs, **self._generation_kwargs(temperature, max_tokens))
-        new_tokens = output[0][inputs["input_ids"].shape[-1]:]
-        return self.processor.decode(new_tokens, skip_special_tokens=True).strip()
+    def generate(
+        self,
+        messages,
+        images=None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        top_p: float = 1.0,
+        stop=None,
+        seed=None,
+        tools=None,
+        tool_choice=None,
+        logprobs: bool = False,
+        top_logprobs=None,
+    ):
+        """Image+text chat completion.
 
-    def stream(self, messages, images=None, temperature: float = 0.7, max_tokens: int = 512) -> Iterator[str]:
-        inputs = self._chat_inputs(messages, images)
-        yield from self._stream_tokens(
-            self.processor.tokenizer,
-            dict(**inputs, **self._generation_kwargs(temperature, max_tokens)),
+        Returns plain text for simple completions; a ChatCompletionResponse-shaped
+        dict when the model emits reasoning or tool calls, or logprobs are requested.
+        """
+        tools = self._prepare_tools(tools, tool_choice)
+        if tools:
+            self._require_tool_support(self.processor)
+        self._apply_seed(seed)
+        inputs = self._chat_inputs(messages, images, tools)
+        generation_kwargs = self._generation_kwargs(temperature, max_tokens, top_p, stop, self.processor.tokenizer)
+        new_tokens, scores = self._run_generate(inputs, generation_kwargs, with_scores=logprobs)
+
+        text = self.processor.decode(new_tokens, skip_special_tokens=True).strip()
+        payload = self._token_logprobs(self.processor.tokenizer, new_tokens, scores, top_logprobs) if logprobs else None
+        return self._chat_result(
+            text,
+            prompt_tokens=inputs["input_ids"].shape[-1],
+            completion_tokens=len(new_tokens),
+            max_tokens=max_tokens,
+            logprobs=payload,
         )
 
-    def _chat_inputs(self, messages, images):
+    def stream(
+        self,
+        messages,
+        images=None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        top_p: float = 1.0,
+        stop=None,
+        seed=None,
+        tools=None,
+        tool_choice=None,
+    ) -> Iterator:
+        """Stream typed chat deltas: content as str, reasoning / tool calls as ChatDelta dicts."""
+        tools = self._prepare_tools(tools, tool_choice)
+        if tools:
+            self._require_tool_support(self.processor)
+        self._apply_seed(seed)
+        inputs = self._chat_inputs(messages, images, tools)
+        yield from self._stream_deltas(
+            self.processor.tokenizer,
+            dict(**inputs, **self._generation_kwargs(temperature, max_tokens, top_p, stop, self.processor.tokenizer)),
+        )
+
+    def _chat_inputs(self, messages, images, tools=None):
         inputs = self.processor.apply_chat_template(
             self._conversation(messages, images),
+            tools=tools,
             tokenize=True,
             add_generation_prompt=True,
             return_dict=True,
@@ -93,18 +141,30 @@ class TransformersVLM(Transformers):
         inputs.pop("token_type_ids", None)
         return inputs.to(self.net.device)
 
+    @staticmethod
+    def _content_parts(content) -> List[dict]:
+        """OpenAI content (str or typed parts) -> transformers chat-template parts."""
+        if isinstance(content, str):
+            return [{"type": "text", "text": content}]
+        parts = []
+        for part in content or []:
+            if part.get("type") == "image_url":
+                # transformers templates take urls/base64 data-URIs as "image".
+                parts.append({"type": "image", "image": part["image_url"]["url"]})
+            else:
+                parts.append(part)
+        return parts
+
     def _conversation(self, messages, images) -> List[dict]:
         """OpenAI-style messages + separate image list -> transformers chat format.
 
         Images are attached before the text of the last user message, the
         placement VLMs are trained on.
         """
-        conversation = []
-        for message in self._normalize_messages(messages):
-            content = message["content"]
-            if isinstance(content, str):
-                content = [{"type": "text", "text": content}]
-            conversation.append({"role": message["role"], "content": content})
+        conversation = [
+            {"role": message["role"], "content": self._content_parts(message.get("content"))}
+            for message in self._normalize_messages(messages)
+        ]
 
         pil_images = [to_pil_image(image) for image in images or []]
         if pil_images:

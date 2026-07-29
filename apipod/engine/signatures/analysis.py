@@ -9,6 +9,8 @@ from collections.abc import AsyncIterator, Iterator
 from types import UnionType
 from typing import Callable, Union, get_args, get_origin, get_type_hints
 
+from pydantic import BaseModel
+
 
 def _return_type_includes_iterator(return_type) -> bool:
     """True when *return_type* is or contains ``Iterator`` / ``AsyncIterator``."""
@@ -42,17 +44,19 @@ def is_streaming_endpoint(func: Callable, schema_binding=None) -> bool:
     if _return_type_includes_iterator(return_type):
         return True
 
-    if schema_binding is None:
-        # Local import: schema_resolve depends on backend modules that in turn
-        # use this analysis module.
-        from apipod.engine.backend.schema_resolve import get_schema_binding
-
-        try:
-            schema_binding = get_schema_binding(func)
-        except Exception:
-            schema_binding = None
-
-    if schema_binding is not None and "stream" in schema_binding.request_model.model_fields:
+    if schema_binding is not None:
+        has_streamable_schema = "stream" in schema_binding.request_model.model_fields
+    else:
+        # No binding supplied: detect a schema-like parameter directly (a pydantic
+        # model with a ``stream`` field). Keeps this module free of the schema
+        # registry (which imports this module).
+        has_streamable_schema = any(
+            inspect.isclass(param.annotation)
+            and issubclass(param.annotation, BaseModel)
+            and "stream" in param.annotation.model_fields
+            for param in inspect.signature(target).parameters.values()
+        )
+    if has_streamable_schema:
         return ast_suggests_request_stream(target)
     return False
 

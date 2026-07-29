@@ -20,6 +20,7 @@ from typing import Any, Iterator, Optional
 
 from media_toolkit import MediaFile
 
+from apipod.common.chat_parsing import combine_deltas
 from apipod.engine.backend.schema_resolve import (
     SchemaBinding,
     SchemaStreamSerializer,
@@ -113,7 +114,17 @@ def aggregate_plain(items: list) -> Any:
 
 
 def aggregate_schema_tokens(items: list, binding: SchemaBinding) -> Any:
-    """Reconstruct the schema response from streamed token items."""
+    """Reconstruct the schema response from streamed items.
+
+    Plain token streams are joined into one text (tag parsing happens in the
+    wrap). Typed chat deltas (dicts for reasoning / tool calls) are folded
+    into a full assistant message.
+    """
+    if binding.tag == "chat" and any(isinstance(item, dict) for item in items):
+        message = combine_deltas(items)
+        finish_reason = "tool_calls" if message.get("tool_calls") else "stop"
+        result = {"choices": [{"index": 0, "message": message, "finish_reason": finish_reason}]}
+        return JobResultFactory._serialize_result(wrap_schema_response(result, binding))
     return JobResultFactory._serialize_result(
         wrap_schema_response("".join(str(i) for i in items), binding)
     )
@@ -139,10 +150,16 @@ def build_stream_producer(result: Any, binding: Optional[SchemaBinding]) -> Opti
 
     if binding is not None and binding.tag in STREAM_CHUNK_SPECS:
         serializer = SchemaStreamSerializer(binding)
+
+        def closing_chunks() -> Iterator[str]:
+            # Lazy: finish_reason (stop vs tool_calls) is known only after the deltas ran.
+            yield serializer.finish()
+            yield SSE_DONE
+
         return StreamProducer(
             raw_chunks=raw_chunks,
             to_chunk=serializer.delta,
-            closing=[serializer.finish(), SSE_DONE],
+            closing=closing_chunks(),
             media_type="text/event-stream",
             aggregate=lambda items, b=binding: aggregate_schema_tokens(items, b),
         )

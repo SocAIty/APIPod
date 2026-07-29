@@ -93,6 +93,7 @@ class DockerFactory:
         context = {
             "base_image": base_image,
             "has_requirements": has_requirements,
+            "entrypoint": Path(entrypoint).as_posix(),
             "entrypoint_module": entrypoint_module,
             "install_cudnn": should_install_cudnn,
             "system_packages": config.get("system_packages", []),

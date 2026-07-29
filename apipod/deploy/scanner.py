@@ -119,6 +119,7 @@ class Scanner:
                 f"(entrypoint imports: {', '.join(sorted(entrypoint_imports)) or 'none'})"
             )
 
+        entrypoint = entrypoint_info.get("file") or target_file or "main.py"
         models, includes = self._collect_declarations(entrypoint)
 
         deployment_config = DeploymentConfig(

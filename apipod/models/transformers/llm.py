@@ -27,28 +27,90 @@ class TransformersLLM(Transformers):
     def warmup(self) -> None:
         self.generate([{"role": "user", "content": "ping"}], max_tokens=1)
 
-    def _chat_input_ids(self, messages):
-        return self.tokenizer.apply_chat_template(
-            self._normalize_messages(messages), add_generation_prompt=True, return_tensors="pt",
-        ).to(self.net.device)
-
-    def generate(self, messages, temperature: float = 0.7, max_tokens: int = 512) -> str:
-        input_ids = self._chat_input_ids(messages)
-        output = self.net.generate(
-            input_ids,
-            pad_token_id=self.tokenizer.eos_token_id,
-            **self._generation_kwargs(temperature, max_tokens),
+    def _chat_inputs(self, messages, tools=None):
+        inputs = self.tokenizer.apply_chat_template(
+            self._text_messages(messages),
+            tools=tools,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
         )
-        return self.tokenizer.decode(output[0][input_ids.shape[-1]:], skip_special_tokens=True)
+        return inputs.to(self.net.device)
 
-    def stream(self, messages, temperature: float = 0.7, max_tokens: int = 512):
-        input_ids = self._chat_input_ids(messages)
-        yield from self._stream_tokens(
+    def _text_messages(self, messages) -> list[dict]:
+        """Flatten multimodal content parts to plain text (text-only model)."""
+        normalized = self._normalize_messages(messages)
+        for message in normalized:
+            content = message.get("content")
+            if isinstance(content, list):
+                message["content"] = "".join(
+                    part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"
+                )
+        return normalized
+
+    def generate(
+        self,
+        messages,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        top_p: float = 1.0,
+        stop=None,
+        seed=None,
+        tools=None,
+        tool_choice=None,
+        logprobs: bool = False,
+        top_logprobs=None,
+    ):
+        """Chat completion.
+
+        Returns plain text for simple completions. When the model emits
+        reasoning or tool calls, or ``logprobs`` is requested, returns a
+        ChatCompletionResponse-shaped dict (choices + usage) instead.
+        """
+        tools = self._prepare_tools(tools, tool_choice)
+        if tools:
+            self._require_tool_support(self.tokenizer)
+        self._apply_seed(seed)
+        inputs = self._chat_inputs(messages, tools)
+        generation_kwargs = dict(
+            pad_token_id=self.tokenizer.eos_token_id,
+            **self._generation_kwargs(temperature, max_tokens, top_p, stop, self.tokenizer),
+        )
+        new_tokens, scores = self._run_generate(inputs, generation_kwargs, with_scores=logprobs)
+
+        text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+        logprobs_payload = self._token_logprobs(self.tokenizer, new_tokens, scores, top_logprobs) if logprobs else None
+        return self._chat_result(
+            text,
+            prompt_tokens=inputs["input_ids"].shape[-1],
+            completion_tokens=len(new_tokens),
+            max_tokens=max_tokens,
+            logprobs=logprobs_payload,
+        )
+
+    def stream(
+        self,
+        messages,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        top_p: float = 1.0,
+        stop=None,
+        seed=None,
+        tools=None,
+        tool_choice=None,
+    ):
+        """Stream typed chat deltas: content as str, reasoning / tool calls as ChatDelta dicts."""
+        tools = self._prepare_tools(tools, tool_choice)
+        if tools:
+            self._require_tool_support(self.tokenizer)
+        self._apply_seed(seed)
+        inputs = self._chat_inputs(messages, tools)
+        yield from self._stream_deltas(
             self.tokenizer,
             dict(
-                input_ids=input_ids,
+                **inputs,
                 pad_token_id=self.tokenizer.eos_token_id,
-                **self._generation_kwargs(temperature, max_tokens),
+                **self._generation_kwargs(temperature, max_tokens, top_p, stop, self.tokenizer),
             ),
         )
 

@@ -66,5 +66,11 @@ ENV APIPOD_PORT=8000
 EXPOSE 8000
 
 # Set the entrypoint
+{%- if compute == "serverless" %}
+# Serverless workers poll the provider job queue: the entrypoint's
+# app.start() (via apipod.serve) hands control to the native worker loop.
+CMD ["python", "{{ entrypoint }}"]
+{%- else %}
 # We use uvicorn to serve the APIPod instance
 CMD ["uvicorn", "{{ entrypoint_module }}:app", "--host", "0.0.0.0", "--port", "8000"]
+{%- endif %}
