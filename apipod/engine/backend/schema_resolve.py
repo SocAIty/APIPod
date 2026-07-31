@@ -24,7 +24,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import UnionType
-from typing import Any, Callable, Iterable, Iterator, Optional, Type, Union, get_args, get_origin
+from typing import Any, Callable, Iterable, Iterator, Optional, Type, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, Field, create_model
 from pydantic.json_schema import SkipJsonSchema
@@ -201,9 +201,18 @@ def get_schema_binding(func: Callable) -> Optional[SchemaBinding]:
     found, the rest of the signature is validated: a schema endpoint must take the
     request schema as its only user input (``job_progress`` and framework
     dependencies aside), so that the whole request lives in the schema body.
+
+    Annotations are resolved via ``get_type_hints`` so services that use
+    ``from __future__ import annotations`` (stringified annotations) still bind.
     """
+    try:
+        hints = get_type_hints(func)
+    except Exception:
+        hints = {}
+
     for param in inspect.signature(func).parameters.values():
-        request_model = resolve_request_model(param.annotation)
+        annotation = hints.get(param.name, param.annotation)
+        request_model = resolve_request_model(annotation)
         if request_model is None:
             continue
 
