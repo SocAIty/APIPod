@@ -49,22 +49,13 @@ def is_streaming_endpoint(func: Callable, schema_binding=None) -> bool:
     else:
         # No binding supplied: detect a schema-like parameter directly (a pydantic
         # model with a ``stream`` field). Keeps this module free of the schema
-        # registry (which imports this module). Resolve via get_type_hints so
-        # ``from __future__ import annotations`` services still detect correctly.
-        try:
-            hints = get_type_hints(target)
-        except Exception:
-            hints = {}
-        has_streamable_schema = False
-        for param in inspect.signature(target).parameters.values():
-            annotation = hints.get(param.name, param.annotation)
-            if (
-                inspect.isclass(annotation)
-                and issubclass(annotation, BaseModel)
-                and "stream" in annotation.model_fields
-            ):
-                has_streamable_schema = True
-                break
+        # registry (which imports this module).
+        has_streamable_schema = any(
+            inspect.isclass(param.annotation)
+            and issubclass(param.annotation, BaseModel)
+            and "stream" in param.annotation.model_fields
+            for param in inspect.signature(target).parameters.values()
+        )
     if has_streamable_schema:
         return ast_suggests_request_stream(target)
     return False
