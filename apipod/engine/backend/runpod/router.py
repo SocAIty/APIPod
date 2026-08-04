@@ -221,12 +221,12 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         try:
             res = self.run_callable(route_function, **kwargs)
 
-        # Streaming response: return the generator so the registered RunPod
-        # handler (a true generator function via ``_runpod_handler``) can yield
-        # chunks. Returning a generator from a *non*-generator handler makes
-        # RunPod ``json.dumps`` it → "Object of type generator is not JSON serializable".
-        if inspect.isgenerator(res) or inspect.isasyncgen(res):
-            return res
+            # Streaming response: return the generator so the registered RunPod
+            # handler (a true generator function via ``_runpod_handler``) can yield
+            # chunks. Returning a generator from a *non*-generator handler makes
+            # RunPod ``json.dumps`` it → "Object of type generator is not JSON serializable".
+            if inspect.isgenerator(res) or inspect.isasyncgen(res):
+                return res
 
             job_record.result = res
             job_record.status = JOB_STATUS.FINISHED
