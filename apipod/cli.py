@@ -260,6 +260,8 @@ def run_deploy(args):
         return
 
     config = _load_or_scan_config(args)
+    if getattr(args, "compute_tier", None):
+        config["compute_tier"] = args.compute_tier
     local_tag = f"apipod-{config.get('title', 'service').lower()}"
 
     if not args.skip_build and not args.push_only:
@@ -456,6 +458,12 @@ Examples:
         "--push-only",
         action="store_true",
         help="With --resume: only push and poll, never build or create drafts.",
+    )
+    deploy_parser.add_argument(
+        "--compute-tier",
+        choices=("cpu", "gpu"),
+        default=None,
+        help="Hardware class hint for draft creation. Overrides apipod.json.",
     )
     deploy_parser.add_argument(
         "-y", "--yes",
