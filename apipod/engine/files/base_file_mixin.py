@@ -74,8 +74,25 @@ def _is_media_list_type(target_type: Any) -> bool:
     return get_origin(target_type) is MediaList
 
 
+def _is_empty_file_array_wire(value: Any) -> bool:
+    """True when a multipart file-array field means 'no files'.
+
+    Catalog clients send the JSON string ``[]``. FastAPI list params wrap that
+    as ``['[]']`` instead of parsing JSON.
+    """
+    if value == []:
+        return True
+    if isinstance(value, str) and value.strip() == "[]":
+        return True
+    if isinstance(value, list) and len(value) == 1:
+        return _is_empty_file_array_wire(value[0])
+    return False
+
+
 def _coerce_wire_list(value: Any) -> Any:
     """Parse JSON list strings from multipart form fields."""
+    if _is_empty_file_array_wire(value):
+        return []
     if isinstance(value, str):
         stripped = value.strip()
         if stripped.startswith("["):
@@ -277,12 +294,15 @@ class _BaseFileHandlingMixin:
             target_type = self._get_media_target_type(annotation)
 
             if _is_media_list_type(target_type):
+                coerced = _coerce_wire_list(param_value)
+                if coerced == []:
+                    return []
                 return MediaList(
                     read_system_files=False,
                     download_files=True,
                     use_temp_file=True,
                     temp_dir=None,
-                ).from_any(_coerce_wire_list(param_value))
+                ).from_any(coerced)
 
             # Attempt conversion
             m = media_from_any(
