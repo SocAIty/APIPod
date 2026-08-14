@@ -22,6 +22,7 @@ from apipod.engine.backend.schema_resolve import (
     wrap_schema_response,
 )
 from apipod.engine.streaming.stream_serializer import as_sync_iter, encode_chunk, is_streaming_result
+from apipod.engine.backend.runpod.handler_compat import as_runpod_generator_handler
 
 from apipod.engine.utils import normalize_name, normalize_mount_prefix
 from apipod.common.settings import APIPOD_PORT
@@ -220,8 +221,10 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         try:
             res = self.run_callable(route_function, **kwargs)
 
-            # Streaming response: hand the generator straight to RunPod, which
-            # aggregates it (no JobResult envelope is produced for streams).
+            # Streaming response: return the generator so the registered RunPod
+            # handler (a true generator function via ``_runpod_handler``) can yield
+            # chunks. Returning a generator from a *non*-generator handler makes
+            # RunPod ``json.dumps`` it → "Object of type generator is not JSON serializable".
             if inspect.isgenerator(res) or inspect.isasyncgen(res):
                 return res
 
@@ -246,7 +249,13 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
 
     def handler(self, job):
         """
-        The handler function that is called by the runpod serverless framework.
+        Dispatch a RunPod job to the matching route.
+
+        May return a JSON JobResult string (non-stream) or a generator of
+        JSON-safe chunks (stream). :meth:`_runpod_handler` wraps this so RunPod
+        sees a generator *function* and can stream yields — returning a
+        generator object from a normal function is not enough (RunPod would
+        try to ``json.dumps`` it).
         """
         inputs = job["input"]
         if "path" not in inputs:
@@ -255,14 +264,11 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         route = inputs["path"]
         del inputs["path"]
 
-        result = self._router(route, job, **inputs)
+        return self._router(route, job, **inputs)
 
-        # If it's a generator, return it directly for RunPod to stream
-        if inspect.isgenerator(result):
-            return result
-
-        # Otherwise return the JSON result
-        return result
+    def _runpod_handler(self):
+        """Handler registered with RunPod (true generator function)."""
+        return as_runpod_generator_handler(self.handler)
 
     def start_runpod_serverless_localhost(self, port):
         # add the -rp_serve_api to the command line arguments to allow debugging
@@ -306,7 +312,10 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
 
         rp_fastapi.WorkerAPI = WorkerAPIWithModifiedInfo
 
-        runpod.serverless.start({"handler": self.handler, "return_aggregate_stream": True})
+        runpod.serverless.start({
+            "handler": self._runpod_handler(),
+            "return_aggregate_stream": True,
+        })
 
     def _create_openapi_compatible_function(
         self,
@@ -475,4 +484,7 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
             self.start_runpod_serverless_localhost(port=port)
         else:
             import runpod.serverless
-            runpod.serverless.start({"handler": self.handler, "return_aggregate_stream": True})
+            runpod.serverless.start({
+                "handler": self._runpod_handler(),
+                "return_aggregate_stream": True,
+            })

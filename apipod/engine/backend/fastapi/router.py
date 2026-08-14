@@ -69,7 +69,10 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
 
         self.status = SERVER_HEALTH.INITIALIZING
 
-        # Queued endpoint plans keyed by worker ``__name__`` (see ``_create_task_endpoint_decorator``).
+        # Queued endpoint plans keyed by ``module.__name__`` (not ``__qualname__``).
+        # Gate handlers are nested factories that share one ``__qualname__`` while
+        # setting a unique ``__name__`` per route; qualname keys collapsed every
+        # plan onto a single slot (last mount won → missing ``links.stream``).
         self._endpoint_plans: dict[str, EndpointExecutionPlan] = {}
         # Stop event and thread handle for in-process worker (dev mode)
         self._worker_stop_event = threading.Event()
@@ -216,15 +219,60 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             ) from None
         return summary or {"id": job_id, "status": "cancelled", "message": "Job cancelled."}
 
+    @staticmethod
+    def _plan_key(func: Callable) -> str:
+        """Stable plan dict key: unique ``__name__`` (gate sets per-route names)."""
+        return f"{func.__module__}.{func.__name__}"
+
+    @staticmethod
+    def _path_looks_like_chat(path: str | None) -> bool:
+        if not path:
+            return False
+        normalized = path.rstrip("/").lower()
+        return normalized == "/chat" or normalized.endswith("/chat")
+
     def add_job(self, func: Callable, job_params: dict) -> JobResult:
         """Enqueue a task and return a :class:`JobResult` with endpoint-aware links."""
         if self.job_queue is None:
             raise ValueError("Job Queue is not initialized. Cannot add job.")
 
-        plan = self._endpoint_plans.get(f"{func.__module__}.{func.__qualname__}")
+        plan_key = self._plan_key(func)
+        plan = self._endpoint_plans.get(plan_key)
+        stream_store_configured = self.stream_store is not None
         supports_streaming = (
-            self.stream_store is not None and plan is not None and plan.is_streaming
+            stream_store_configured and plan is not None and plan.is_streaming
         )
+        plan_path = getattr(plan, "path", None) if plan is not None else None
+        plan_streaming = bool(getattr(plan, "is_streaming", False)) if plan is not None else False
+        self._logger.info(
+            "add_job plan lookup | plan_key=%s func_name=%s plan_found=%s "
+            "plan_path=%s plan_is_streaming=%s stream_store=%s include_stream_link=%s",
+            plan_key,
+            func.__name__,
+            plan is not None,
+            plan_path,
+            plan_streaming,
+            stream_store_configured,
+            supports_streaming,
+        )
+        if plan is None:
+            self._logger.warning(
+                "add_job missing endpoint plan | plan_key=%s func_name=%s "
+                "func_qualname=%s plans_count=%d",
+                plan_key,
+                func.__name__,
+                func.__qualname__,
+                len(self._endpoint_plans),
+            )
+        elif self._path_looks_like_chat(plan_path) and not supports_streaming:
+            self._logger.warning(
+                "add_job chat path without stream link | plan_key=%s plan_path=%s "
+                "plan_is_streaming=%s stream_store=%s",
+                plan_key,
+                plan_path,
+                plan_streaming,
+                stream_store_configured,
+            )
         return self.job_queue.add_job(
             job_function=func,
             job_params=job_params,
@@ -262,8 +310,30 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
                 route_args=args,
                 route_kwargs=kwargs,
             )
-            # save the plan for later use
-            self._endpoint_plans[f"{func.__module__}.{func.__qualname__}"] = plan
+            plan_key = self._plan_key(func)
+            previous = self._endpoint_plans.get(plan_key)
+            if previous is not None and (
+                previous.path != plan.path or previous.is_streaming != plan.is_streaming
+            ):
+                self._logger.warning(
+                    "endpoint plan key overwrite | plan_key=%s prev_path=%s "
+                    "prev_is_streaming=%s new_path=%s new_is_streaming=%s",
+                    plan_key,
+                    previous.path,
+                    previous.is_streaming,
+                    plan.path,
+                    plan.is_streaming,
+                )
+            self._endpoint_plans[plan_key] = plan
+            self._logger.info(
+                "endpoint plan stored | plan_key=%s path=%s is_streaming=%s "
+                "plans_count=%d func_qualname=%s",
+                plan_key,
+                plan.path,
+                plan.is_streaming,
+                len(self._endpoint_plans),
+                func.__qualname__,
+            )
 
             # Streaming with a queue + stream store mimics a real deployment:
             # the job is queued, the worker produces chunks into the stream store
