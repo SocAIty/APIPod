@@ -1,8 +1,26 @@
 import functools
 from typing import Callable
 
+from media_toolkit import MediaFile, MediaList
+
 from apipod.common.constants import SERVER_HEALTH
 from apipod.engine.jobs.job_result import JobResult
+
+
+def _materialize_media_params(job_params: dict) -> None:
+    """Copy lazy media views into owned buffers before enqueueing.
+
+    Uploads are wrapped lazily over the Starlette request spool, which closes
+    when the request ends. A queued job runs later in a worker thread, so it
+    must own its bytes (a lazy handle in the queue is a use-after-close).
+    """
+    for value in job_params.values():
+        if isinstance(value, MediaFile):
+            value.materialize()
+        elif isinstance(value, MediaList):
+            for item in value:
+                if isinstance(item, MediaFile):
+                    item.materialize()
 
 
 class _QueueMixin:
@@ -39,6 +57,7 @@ class _QueueMixin:
             @functools.wraps(func)
             def job_creation_func_wrapper(**func_kwargs) -> JobResult:
                 if self.job_queue:
+                    _materialize_media_params(func_kwargs)
                     return self.add_job(func, func_kwargs)
                 raise ValueError("job_queue_func called but no job_queue is configured.")
 

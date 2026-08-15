@@ -125,6 +125,8 @@ File support is split into a *signature* layer and a *runtime* layer.
 - **Signature rewriting** (`engine/backend/fastapi/file_handling_mixin.py`): media-toolkit annotations in the user's signature are rewritten so FastAPI/OpenAPI understand them. `image: ImageFile` becomes `Union[LimitedUploadFile, ImageFileModel, str]` — the client may send a multipart upload, a `FileModel` JSON object (`{file_name, content_type, content}` where content is base64 or a URL), or a plain URL/base64 string. `MediaList[...]` maps to list variants. Upload size limits are enforced via a dynamically subclassed `LimitedUploadFile`. `JobProgress` parameters are stripped from the public signature (and a dummy is injected when no queue runs).
 - **Runtime conversion** (`engine/files/base_file_mixin.py`): before the user function executes, every media-annotated argument is converted to the annotated media-toolkit type via `media_from_any` — whatever the client actually sent. The function body always receives real `MediaFile` objects. This layer is backend-agnostic and reused by the RunPod router.
 
+Multipart uploads are wrapped lazily: the `MediaFile` borrows the Starlette upload spool (no copy) and content-type detection runs on a 1 KB magic peek at wrap time. Handlers can stream the spool onward (`stream_to`, `fileobj`, `to_httpx_send_able_tuple`). Because the spool is request-scoped, `_QueueMixin` materializes every `MediaFile`/`MediaList` in the job params before enqueueing, so queued workers always receive owned bytes.
+
 On the way out, `JobResultFactory._serialize_result` converts returned `MediaFile`/`MediaList`/pydantic objects back into JSON-safe `FileModel` payloads.
 
 ### Standardized schemas
