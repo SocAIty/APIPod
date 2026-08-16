@@ -13,6 +13,16 @@ from apipod.deploy.detectors import (
     FrameworkDetector,
 )
 from apipod.deploy.profile import infer_profile, reconcile_framework_flags
+from apipod.deploy.resources import apply_resource_defaults
+
+_PRESERVE_ON_RESCAN = (
+    "docker_context",
+    "compute_tier",
+    "disk_gb",
+    "gpu_vram_gb",
+    "min_gpu_vram_gb",
+)
+_RESOURCE_KEYS = ("compute_tier", "disk_gb", "gpu_vram_gb", "min_gpu_vram_gb")
 
 
 @dataclass
@@ -37,6 +47,9 @@ class DeploymentConfig:
     # by importing the entrypoint under APIPOD_SCAN=1 (declarations only).
     models: List[Dict[str, Any]] = field(default_factory=list)
     includes: List[Dict[str, str]] = field(default_factory=list)
+    compute_tier: Optional[str] = None
+    disk_gb: Optional[int] = None
+    gpu_vram_gb: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -143,11 +156,27 @@ class Scanner:
             includes=includes,
         )
 
+        config = deployment_config.to_dict()
+        existing = self.load_report() or {}
+        for key in _RESOURCE_KEYS:
+            if existing.get(key) not in (None, ""):
+                config[key] = existing[key]
+        config = apply_resource_defaults(config)
         print(f"Deployment profile: {profile}")
+        print(
+            f"Resources: compute_tier={config.get('compute_tier')}, "
+            f"disk_gb={config.get('disk_gb')}"
+            + (
+                f", gpu_vram_gb={config.get('gpu_vram_gb')}"
+                if config.get("gpu_vram_gb")
+                else ""
+            )
+        )
+        print("Edit disk_gb / gpu_vram_gb in apipod.json to override these defaults.")
         if python_deps:
             print(f"Python dependencies: {', '.join(sorted(python_deps))}")
         print("\n--- Scan Completed ---\n")
-        return deployment_config.to_dict()
+        return config
 
     def _collect_declarations(self, entrypoint: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
         """Import the entrypoint under APIPOD_SCAN=1 and collect declared
@@ -197,9 +226,14 @@ class Scanner:
 
     def save_report(self, config: Dict[str, Any]) -> None:
         try:
+            existing = self.load_report() or {}
+            merged = dict(config)
+            for key in _PRESERVE_ON_RESCAN:
+                if existing.get(key) and not merged.get(key):
+                    merged[key] = existing[key]
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
             with self.config_path.open("w", encoding="utf-8") as f:
-                json.dump(config, f, indent=4)
+                json.dump(merged, f, indent=4)
             print(f"Configuration saved to {self.config_path}")
             self._write_starter_files(config)
         except Exception as exc:

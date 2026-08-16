@@ -64,7 +64,9 @@ def get_or_create_config(manager: DeploymentManager, target_file: Optional[str] 
 
     if manager.config_exists:
         if not input_yes_no(f"Found {manager.config_path.name} in {manager.config_path.parent}/. Overwrite?"):
-            return manager.load_config()
+            config = manager.load_config()
+            manager.ensure_dockerfile(config)
+            return config
 
         print("Rescanning project...")
         config_data = perform_scan()
