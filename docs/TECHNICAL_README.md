@@ -67,7 +67,9 @@ from ``type(model)`` (never the instance) so the lazy-load ``__getattr__`` of
 ``Model`` is not triggered. Custom ``Model`` subclasses opt in by naming their
 methods accordingly; service files keep ``serve()`` under
 ``if __name__ == "__main__":`` so ``apipod scan`` can import them without
-starting a server.
+starting a server. ``apipod scan`` treats ``serve()`` the same as
+``APIPod()`` when locating the entrypoint. Several matching files produce
+an interactive select.
 
 ## Core principles
 

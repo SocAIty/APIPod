@@ -1,132 +1,240 @@
-import os
 import ast
+import os
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
 from .IDetector import Detector
+
+_PRIORITY_FILES = ("main.py", "app.py", "api.py", "serve.py")
+_FACTORY_NAMES = frozenset({"APIPod", "serve"})
+
+
+def _empty_result() -> Dict[str, Any]:
+    return {
+        "file": None,
+        "title": "apipod-service",
+        "found_config": False,
+        "kind": None,
+        "orchestrator": "local",
+        "compute": "dedicated",
+        "provider": "localhost",
+    }
+
+
+def _factory_aliases(tree: ast.AST) -> Dict[str, str]:
+    """Map local names to the apipod factory they refer to (``APIPod`` / ``serve`` / ``apipod``)."""
+    aliases: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and (
+            node.module == "apipod" or node.module.startswith("apipod.")
+        ):
+            for alias in node.names:
+                if alias.name in _FACTORY_NAMES:
+                    aliases[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "apipod":
+                    aliases[alias.asname or "apipod"] = "apipod"
+    return aliases
+
+
+def _factory_kind(node: ast.Call, aliases: Dict[str, str]) -> Optional[str]:
+    """Return ``APIPod`` or ``serve`` when this call constructs the service."""
+    func = node.func
+    if isinstance(func, ast.Name):
+        kind = aliases.get(func.id)
+        return kind if kind in _FACTORY_NAMES else None
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        if aliases.get(func.value.id) == "apipod" and func.attr in _FACTORY_NAMES:
+            return func.attr
+    return None
+
+
+def _ast_constant(node) -> Optional[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Str):
+        return node.s
+    return None
+
+
+def _apply_keywords(node: ast.Call, result: Dict[str, Any]) -> None:
+    for keyword in node.keywords:
+        value = _ast_constant(keyword.value)
+        if value is None:
+            continue
+        if keyword.arg in {"title", "orchestrator", "compute", "provider"}:
+            result[keyword.arg] = value
+
+
+def _eval_simple(node: ast.AST, module: Any) -> Any:
+    """Resolve a name or ``obj.attr`` against an already-imported module."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Str):
+        return node.s
+    if isinstance(node, ast.Name):
+        return getattr(module, node.id, None)
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        obj = getattr(module, node.value.id, None)
+        return getattr(obj, node.attr, None) if obj is not None else None
+    return None
+
+
+def resolve_entrypoint_title(file_path: str, module: Any) -> Optional[str]:
+    """Read ``title=`` from ``APIPod()`` / ``serve()`` after the entrypoint was imported.
+
+    Static scan only sees string literals. ``serve(model, title=spec.family)``
+    is resolved here against the imported module.
+    """
+    try:
+        tree = ast.parse(Path(file_path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    aliases = _factory_aliases(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or _factory_kind(node, aliases) is None:
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "title":
+                continue
+            value = _eval_simple(keyword.value, module)
+            if isinstance(value, str) and value:
+                return value
+    return None
 
 
 class EntrypointDetector(Detector):
-    def detect(self, target_file: Optional[str] | None = None) -> Dict[str, Any]:
+    def detect(self, target_file: Optional[str] = None) -> Dict[str, Any]:
         print("Scanning for entrypoint and service configuration...")
 
-        result = {
-            "file": None,
-            "title": "apipod-service",
-            "found_config": False,
-            "orchestrator": "local",
-            "compute": "dedicated",
-            "provider": "localhost",
-        }
-
-        # 1. Prioritize user-provided target file
         if target_file:
-            # Convert everything to absolute paths to compare fairly
-            absolute_project_root = Path(self.project_root).resolve()
-            
-            # This handles cases where user provides ./test.py or an absolute path
-            provided_path = Path(target_file)
-            if not provided_path.is_absolute():
-                # If relative, assume it's relative to where the user is CURRENTLY
-                full_path = Path.cwd() / provided_path
-            else:
-                full_path = provided_path
-                
-            full_path = full_path.resolve()
+            explicit = self._from_explicit_path(target_file)
+            if explicit is not None:
+                return explicit
 
-            if full_path.exists():
-                # We must store the path RELATIVE to the project root for Docker
-                try:
-                    rel_path = full_path.relative_to(absolute_project_root)
-                    result["file"] = str(rel_path)
-                    self._scan_file_for_title(str(full_path), result)
-                    print(f"Using explicitly provided entrypoint: {rel_path}")
-                    return result
-                except ValueError:
-                    print(f"Warning: {target_file} exists but is outside the project root.")
-            else:
-                print(f"Warning: Provided target file {target_file} not found at {full_path}")
-
-        # 2. Check priority files (standard discovery)
-        priority_files = ["main.py", "app.py", "api.py", "serve.py"]
-        for filename in priority_files:
-            path = os.path.join(self.project_root, filename)
-            if os.path.exists(path):
-                result["file"] = filename
-                self._scan_file_for_title(path, result)
-                if result["found_config"]:
-                    print(f"Found entrypoint and config in: {filename}")
-                    return result
-                print(f"Found entrypoint file: {filename} (no config detected)")
-                return result
-
-        # 3. Deep scan (fallback)
-        print("No standard entrypoint file found. Scanning file contents...")
-        for root, _, files in os.walk(self.project_root):
-            if self.should_ignore(root):
-                continue
-            for file in files:
-                if file.endswith(".py") and file not in priority_files:
-                    file_path = os.path.join(root, file)
-                    rel_path = os.path.relpath(file_path, self.project_root)
-                    if self._scan_file_for_indicators(file_path, result):
-                        result["file"] = rel_path
-                        print(f"Found entrypoint in code pattern: {rel_path}")
-                        return result
-
-        if result["file"] is None:
+        candidates = self._collect_candidates()
+        if not candidates:
+            fallback = self._priority_without_config()
+            if fallback is not None:
+                print(f"Found entrypoint file: {fallback['file']} (no config detected)")
+                return fallback
             print("No entrypoint detected.")
+            return _empty_result()
 
+        if len(candidates) == 1:
+            chosen = candidates[0]
+            print(f"Found entrypoint: {chosen['file']} ({chosen['kind']})")
+            return chosen
+
+        return self._select_candidate(candidates)
+
+    def _from_explicit_path(self, target_file: str) -> Optional[Dict[str, Any]]:
+        root = Path(self.project_root).resolve()
+        provided = Path(target_file)
+        full_path = provided if provided.is_absolute() else Path.cwd() / provided
+        full_path = full_path.resolve()
+
+        if not full_path.exists():
+            print(f"Warning: Provided target file {target_file} not found at {full_path}")
+            return None
+        try:
+            rel = full_path.relative_to(root)
+        except ValueError:
+            print(f"Warning: {target_file} exists but is outside the project root.")
+            return None
+
+        candidate = self._analyze_file(full_path, root)
+        if candidate is not None:
+            print(f"Using explicitly provided entrypoint: {candidate['file']}")
+            return candidate
+
+        result = _empty_result()
+        result["file"] = rel.as_posix()
+        print(f"Using explicitly provided entrypoint: {result['file']}")
         return result
 
-    def _scan_file_for_title(self, file_path: str, result: Dict[str, Any]):
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
+    def _collect_candidates(self) -> List[Dict[str, Any]]:
+        root = Path(self.project_root).resolve()
+        found: List[Dict[str, Any]] = []
+        seen = set()
 
-            if "APIPod" in content:
-                tree = ast.parse(content)
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Call):
-                        if isinstance(node.func, ast.Name) and node.func.id == "APIPod":
-                            result["found_config"] = True
-                            for keyword in node.keywords:
-                                value = self._ast_constant(keyword.value)
-                                if value is None:
-                                    continue
-                                if keyword.arg == "title":
-                                    result["title"] = value
-                                elif keyword.arg == "orchestrator":
-                                    result["orchestrator"] = value
-                                elif keyword.arg == "compute":
-                                    result["compute"] = value
-                                elif keyword.arg == "provider":
-                                    result["provider"] = value
-        except Exception:
-            pass
+        for dirpath, _, files in os.walk(root):
+            if self.should_ignore(dirpath):
+                continue
+            for file in files:
+                if not file.endswith(".py"):
+                    continue
+                path = Path(dirpath) / file
+                candidate = self._analyze_file(path, root)
+                if candidate is None or candidate["file"] in seen:
+                    continue
+                found.append(candidate)
+                seen.add(candidate["file"])
 
-    @staticmethod
-    def _ast_constant(node) -> Optional[str]:
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return node.value
-        if isinstance(node, ast.Str):
-            return node.s
+        found.sort(key=lambda item: (item["file"] not in _PRIORITY_FILES, item["file"]))
+        return found
+
+    def _priority_without_config(self) -> Optional[Dict[str, Any]]:
+        root = Path(self.project_root).resolve()
+        for name in _PRIORITY_FILES:
+            if (root / name).is_file():
+                result = _empty_result()
+                result["file"] = name
+                return result
         return None
 
-    def _scan_file_for_indicators(self, file_path: str, result: Dict[str, Any]) -> bool:
+    def _analyze_file(self, path: Path, root: Path) -> Optional[Dict[str, Any]]:
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
-
-            # Check for APIPod config
-            if "APIPod" in content:
-                self._scan_file_for_title(file_path, result)
-                if result["found_config"]:
-                    return True
-
-            # Check for other indicators
-            if "app.start()" in content or "uvicorn.run" in content:
-                return True
-
-            return False
+            content = path.read_text(encoding="utf-8")
         except Exception:
-            return False
+            return None
+
+        if not any(token in content for token in ("APIPod(", "serve(", "app.start()", "uvicorn.run")):
+            return None
+
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return None
+
+        result = _empty_result()
+        result["file"] = path.resolve().relative_to(root).as_posix()
+        aliases = _factory_aliases(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            kind = _factory_kind(node, aliases)
+            if kind is None:
+                continue
+            result["found_config"] = True
+            result["kind"] = kind
+            _apply_keywords(node, result)
+
+        if result["found_config"]:
+            return result
+
+        if "app.start()" in content or "uvicorn.run" in content:
+            result["kind"] = "start"
+            return result
+        return None
+
+    @staticmethod
+    def _select_candidate(candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+        print(f"Found {len(candidates)} entrypoints. Select one:")
+        for index, candidate in enumerate(candidates, 1):
+            title = candidate.get("title")
+            extra = f", title={title}" if title and title != "apipod-service" else ""
+            print(f"  {index}. {candidate['file']} ({candidate['kind']}{extra})")
+
+        while True:
+            raw = input("Selection: ").strip()
+            try:
+                idx = int(raw) - 1
+                if 0 <= idx < len(candidates):
+                    chosen = candidates[idx]
+                    print(f"Using entrypoint: {chosen['file']}")
+                    return chosen
+            except ValueError:
+                pass
+            print("Invalid selection. Please try again.")

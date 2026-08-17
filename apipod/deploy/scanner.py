@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import shutil
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -12,6 +13,7 @@ from apipod.deploy.detectors import (
     EntrypointDetector,
     FrameworkDetector,
 )
+from apipod.deploy.detectors.entrypoint import resolve_entrypoint_title
 from apipod.deploy.profile import infer_profile, reconcile_framework_flags
 
 
@@ -120,11 +122,12 @@ class Scanner:
             )
 
         entrypoint = entrypoint_info.get("file") or target_file or "main.py"
-        models, includes = self._collect_declarations(entrypoint)
+        models, includes, resolved_title = self._collect_declarations(entrypoint)
+        title = resolved_title or entrypoint_info.get("title", "apipod-service")
 
         deployment_config = DeploymentConfig(
             entrypoint=entrypoint,
-            title=entrypoint_info.get("title", "apipod-service"),
+            title=title,
             profile=profile,
             python_version=framework_info.get("python_version", "3.10"),
             orchestrator=entrypoint_info.get("orchestrator", "local"),
@@ -149,7 +152,9 @@ class Scanner:
         print("\n--- Scan Completed ---\n")
         return deployment_config.to_dict()
 
-    def _collect_declarations(self, entrypoint: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
+    def _collect_declarations(
+        self, entrypoint: str
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]], Optional[str]]:
         """Import the entrypoint under APIPOD_SCAN=1 and collect declared
         ``apipod.Model`` instances and standalone include handles.
 
@@ -161,18 +166,27 @@ class Scanner:
 
         entrypoint_path = (self.root_path / entrypoint).resolve()
         if not entrypoint_path.exists():
-            return [], []
+            return [], [], None
 
         os.environ["APIPOD_SCAN"] = "1"
+        root = str(self.root_path)
+        added_path = root not in sys.path
+        if added_path:
+            sys.path.insert(0, root)
         try:
             spec = importlib.util.spec_from_file_location("apipod_scan_entrypoint", entrypoint_path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
         except Exception as exc:
             print(f"Warning: could not import {entrypoint} to collect model declarations: {exc}")
-            return [], []
+            return [], [], None
         finally:
             os.environ.pop("APIPOD_SCAN", None)
+            if added_path:
+                try:
+                    sys.path.remove(root)
+                except ValueError:
+                    pass
 
         models: List[Dict[str, Any]] = []
         owned_refs = set()
@@ -193,7 +207,7 @@ class Scanner:
         ]
         if models or includes:
             print(f"Declared models: {[m['class'] for m in models]}, standalone includes: {len(includes)}")
-        return models, includes
+        return models, includes, resolve_entrypoint_title(str(entrypoint_path), module)
 
     def save_report(self, config: Dict[str, Any]) -> None:
         try:

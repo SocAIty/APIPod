@@ -28,6 +28,10 @@ class Detector(ABC):
             'apipod-deploy',
         }
 
+        # Project root itself is ``.``; do not treat that as a hidden directory.
+        if rel_path == os.curdir:
+            return False
+
         # Check if any part of the path matches ignore patterns
         parts = rel_path.split(os.sep)
         return any(part in ignore_dirs or part.startswith('.') for part in parts)
