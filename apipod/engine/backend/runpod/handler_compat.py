@@ -65,8 +65,3 @@ def as_runpod_async_handler(dispatch: Callable[[Any], Any]) -> Callable[[Any], A
     handler.__doc__ = getattr(dispatch, "__doc__", None)
     assert inspect.isasyncgenfunction(handler)
     return handler
-
-
-def as_runpod_generator_handler(dispatch: Callable[[Any], Any]) -> Callable[[Any], AsyncIterator]:
-    """Backward-compatible alias: RunPod handler is always an async generator."""
-    return as_runpod_async_handler(dispatch)

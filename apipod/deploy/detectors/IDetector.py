@@ -28,8 +28,10 @@ class Detector(ABC):
             'apipod-deploy',
         }
 
-        # Check if any part of the path matches ignore patterns
-        parts = rel_path.split(os.sep)
+        # The project root itself is relpath '.' and must not be ignored.
+        parts = [p for p in rel_path.split(os.sep) if p and p != "."]
+        if not parts:
+            return False
         return any(part in ignore_dirs or part.startswith('.') for part in parts)
 
     @abstractmethod

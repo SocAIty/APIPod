@@ -61,17 +61,31 @@ class EntrypointDetector(Detector):
 
         # 3. Deep scan (fallback)
         print("No standard entrypoint file found. Scanning file contents...")
+        matches: list = []
         for root, _, files in os.walk(self.project_root):
             if self.should_ignore(root):
                 continue
-            for file in files:
+            for file in sorted(files):
                 if file.endswith(".py") and file not in priority_files:
+                    if file.startswith("test_") or file == "conftest.py":
+                        continue
                     file_path = os.path.join(root, file)
                     rel_path = os.path.relpath(file_path, self.project_root)
+                    if rel_path.startswith("scripts" + os.sep):
+                        continue
                     if self._scan_file_for_indicators(file_path, result):
-                        result["file"] = rel_path
-                        print(f"Found entrypoint in code pattern: {rel_path}")
-                        return result
+                        matches.append(rel_path)
+        if matches:
+            chosen = matches[0]
+            result["file"] = chosen
+            if len(matches) > 1:
+                print(
+                    f"Multiple APIPod services found: {', '.join(matches)}. "
+                    f"Using {chosen}. Pass -f <file> to choose another."
+                )
+            else:
+                print(f"Found entrypoint in code pattern: {chosen}")
+            return result
 
         if result["file"] is None:
             print("No entrypoint detected.")
@@ -126,6 +140,9 @@ class EntrypointDetector(Detector):
             # Check for other indicators
             if "app.start()" in content or "uvicorn.run" in content:
                 return True
+            if "from apipod import" in content or "import apipod" in content:
+                if "serve(" in content or "TransformersLLM" in content or "TransformersVLM" in content or "VLLMChat" in content:
+                    return True
 
             return False
         except Exception:

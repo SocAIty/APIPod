@@ -60,11 +60,13 @@ encoder-free unified models like Gemma 4.
 ### vLLM (`apipod/models/vllm`)
 
 ``VLLMChat`` is a chat preset that does not import vLLM. ``load()`` spawns
-``vllm serve`` on ``VLLM_HOST``/``VLLM_PORT``, polls ``/health``, and
+``vllm serve`` on ``APIPOD_VLLM_HOST``/``APIPOD_VLLM_PORT``, polls ``/health``, and
 ``generate``/``agenerate`` POST to ``/v1/chat/completions``. The RunPod worker
 honors ``MAX_CONCURRENCY`` via ``concurrency_modifier`` so several queue jobs
 await that HTTP server on one GPU. ``serve()`` registers ``/chat`` only (no
-embeddings).
+embeddings). ``APIPOD_VLLM_SPECULATIVE_CONFIG`` maps to vLLM's
+``--speculative-config`` JSON argument; for example Qwen3.8's built-in MTP
+head uses ``{"method":"mtp","num_speculative_tokens":3}``.
 
 ### serve() (`apipod/serve.py`)
 

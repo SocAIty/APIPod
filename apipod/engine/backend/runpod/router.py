@@ -1,6 +1,5 @@
 import functools
 import inspect
-import os
 import traceback
 from datetime import datetime, timezone
 from typing import Union, Callable, Iterator
@@ -27,7 +26,7 @@ from apipod.engine.streaming.stream_serializer import as_sync_iter, encode_chunk
 from apipod.engine.backend.runpod.handler_compat import as_runpod_async_handler
 
 from apipod.engine.utils import normalize_name, normalize_mount_prefix
-from apipod.common.settings import APIPOD_PORT
+from apipod.common.settings import APIPOD_PORT, MAX_CONCURRENCY
 from media_toolkit import AudioFile, VideoFile
 
 
@@ -359,10 +358,9 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
     @staticmethod
     def _runpod_start_config(handler) -> dict:
         """Shared RunPod worker config, including in-worker concurrency."""
-        max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "1"))
         return {
             "handler": handler,
-            "concurrency_modifier": lambda _current, value=max_concurrency: value,
+            "concurrency_modifier": lambda _current: MAX_CONCURRENCY,
             "return_aggregate_stream": True,
         }
 

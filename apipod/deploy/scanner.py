@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import shutil
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -13,7 +14,7 @@ from apipod.deploy.detectors import (
     FrameworkDetector,
 )
 from apipod.deploy.profile import infer_profile, reconcile_framework_flags
-from apipod.deploy.resources import apply_resource_defaults
+from apipod.deploy.resources import apply_resource_defaults, discover_hf_refs
 
 _PRESERVE_ON_RESCAN = (
     "docker_context",
@@ -189,37 +190,49 @@ class Scanner:
         from apipod.models import declared_includes, declared_models
 
         entrypoint_path = (self.root_path / entrypoint).resolve()
-        if not entrypoint_path.exists():
-            return [], []
-
-        os.environ["APIPOD_SCAN"] = "1"
-        try:
-            spec = importlib.util.spec_from_file_location("apipod_scan_entrypoint", entrypoint_path)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-        except Exception as exc:
-            print(f"Warning: could not import {entrypoint} to collect model declarations: {exc}")
-            return [], []
-        finally:
-            os.environ.pop("APIPOD_SCAN", None)
-
         models: List[Dict[str, Any]] = []
-        owned_refs = set()
-        for model in declared_models():
-            entry: Dict[str, Any] = {"class": type(model).__name__}
-            handles = model.includes()
-            if not handles:
-                print(f"Warning: model {entry['class']} declares no include (weights unknown to the platform).")
-            for attr, handle in handles.items():
-                entry[attr] = handle.to_dict()
-                owned_refs.add((handle.kind, handle.ref))
-            models.append(entry)
+        includes: List[Dict[str, str]] = []
+        if entrypoint_path.exists():
+            root = str(self.root_path)
+            if root not in sys.path:
+                sys.path.insert(0, root)
+            os.environ["APIPOD_SCAN"] = "1"
+            try:
+                spec = importlib.util.spec_from_file_location("apipod_scan_entrypoint", entrypoint_path)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+            except Exception as exc:
+                print(f"Warning: could not import {entrypoint} to collect model declarations: {exc}")
+            else:
+                owned_refs = set()
+                for model in declared_models():
+                    entry: Dict[str, Any] = {"class": type(model).__name__}
+                    handles = model.includes()
+                    if not handles:
+                        print(
+                            f"Warning: model {entry['class']} declares no include "
+                            "(weights unknown to the platform)."
+                        )
+                    for attr, handle in handles.items():
+                        entry[attr] = handle.to_dict()
+                        owned_refs.add((handle.kind, handle.ref))
+                    models.append(entry)
+                includes = [
+                    handle.to_dict()
+                    for key, handle in declared_includes().items()
+                    if key not in owned_refs
+                ]
+            finally:
+                os.environ.pop("APIPOD_SCAN", None)
 
-        includes = [
-            handle.to_dict()
-            for key, handle in declared_includes().items()
-            if key not in owned_refs
-        ]
+        if not models and not includes:
+            for ref in discover_hf_refs(self.root_path, entrypoint):
+                models.append({
+                    "class": "Transformers",
+                    "weights": {"kind": "hf", "ref": ref},
+                })
+                print(f"Detected Hugging Face model: {ref}")
+
         if models or includes:
             print(f"Declared models: {[m['class'] for m in models]}, standalone includes: {len(includes)}")
         return models, includes
