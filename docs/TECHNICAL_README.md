@@ -21,7 +21,7 @@ apipod/
 ├── api.py                  # APIPod() factory: resolves intent → backend instance
 ├── serve.py                # serve(model): capability-based endpoint registration + start
 ├── common/
-│   ├── settings.py         # Env-driven config (APIPOD_SIMULATE / _DIRECT / _COMPUTE / _PROVIDER, cert, host, port)
+│   ├── settings.py         # Env-driven config (compute/provider, MAX_CONCURRENCY, VLLM_PORT, cert, host, port)
 │   ├── constants.py        # Enums: COMPUTE, PROVIDER, SERVER_HEALTH
 │   └── schemas/
 │       └── __init__.py     # Re-exports from socaity-schemas (OpenAI-compatible request/response + FileModel)
@@ -39,7 +39,8 @@ apipod/
 ├── models/
 │   ├── includes.py         # include / include_hf handles (declare bytes, resolve lazily)
 │   ├── model.py            # Model base: load()/warmup(), registry, app-start loading
-│   └── transformers/       # Transformers base + TransformersLLM / TransformersVLM presets
+│   ├── transformers/       # Transformers base + TransformersLLM / TransformersVLM presets
+│   └── vllm/               # VLLMChat: spawn `vllm serve`, OpenAI HTTP generate/agenerate
 └── deploy/                 # `apipod build`: Dockerfile generation, dependency/CUDA detection
 ```
 
@@ -55,6 +56,15 @@ are the concrete presets. ``TransformersVLM`` resolves the model class through
 the auto-class ladder ``AutoModelForImageTextToText`` →
 ``AutoModelForMultimodalLM``, which covers Qwen-VL generations as well as
 encoder-free unified models like Gemma 4.
+
+### vLLM (`apipod/models/vllm`)
+
+``VLLMChat`` is a chat preset that does not import vLLM. ``load()`` spawns
+``vllm serve`` on ``VLLM_HOST``/``VLLM_PORT``, polls ``/health``, and
+``generate``/``agenerate`` POST to ``/v1/chat/completions``. The RunPod worker
+honors ``MAX_CONCURRENCY`` via ``concurrency_modifier`` so several queue jobs
+await that HTTP server on one GPU. ``serve()`` registers ``/chat`` only (no
+embeddings).
 
 ### serve() (`apipod/serve.py`)
 

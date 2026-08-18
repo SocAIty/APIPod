@@ -17,6 +17,26 @@ APIPOD_NATIVE = environ.get("APIPOD_NATIVE", "").strip().lower() in ("1", "true"
 APIPOD_HOST = environ.get("APIPOD_HOST", "0.0.0.0")
 APIPOD_PORT = int(environ.get("APIPOD_PORT", 8000))
 
+# RunPod worker in-flight jobs. Default 1 keeps transformers services serial.
+# Official worker-vllm reads the same name into concurrency_modifier.
+MAX_CONCURRENCY = int(environ.get("MAX_CONCURRENCY", "1"))
+
+# Local vLLM HTTP server spawned by VLLMChat (not the APIPod bind port).
+# Use APIPOD_VLLM_* names. Bare VLLM_* vars are reserved by the vLLM process
+# (unknown ones warn; VLLM_PORT can clash with the engine).
+VLLM_HOST = environ.get("APIPOD_VLLM_HOST", environ.get("VLLM_HOST", "127.0.0.1"))
+VLLM_PORT = int(environ.get("APIPOD_VLLM_PORT", environ.get("VLLM_PORT", "18000")))
+VLLM_MAX_MODEL_LEN = environ.get("APIPOD_VLLM_MAX_MODEL_LEN", environ.get("VLLM_MAX_MODEL_LEN", ""))
+# worker-vllm default. vLLM's own default (1024) exceeds Qwen3.8 Mamba cache.
+VLLM_MAX_NUM_SEQS = environ.get("APIPOD_VLLM_MAX_NUM_SEQS", environ.get("VLLM_MAX_NUM_SEQS", "256"))
+VLLM_REASONING_PARSER = environ.get(
+    "APIPOD_VLLM_REASONING_PARSER", environ.get("VLLM_REASONING_PARSER", "")
+)
+VLLM_EXTRA_ARGS = environ.get("APIPOD_VLLM_EXTRA_ARGS", environ.get("VLLM_EXTRA_ARGS", ""))
+VLLM_STARTUP_TIMEOUT = int(
+    environ.get("APIPOD_VLLM_STARTUP_TIMEOUT", environ.get("VLLM_STARTUP_TIMEOUT", "1200"))
+)
+
 SERVER_DOMAIN = environ.get("SERVER_DOMAIN", "")
 
 DEFAULT_DATE_TIME_FORMAT = environ.get("FTAPI_DATETIME_FORMAT", '%Y-%m-%dT%H:%M:%S.%f%z')

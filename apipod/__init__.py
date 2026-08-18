@@ -6,6 +6,7 @@ from apipod.models import (
     Transformers,
     TransformersLLM,
     TransformersVLM,
+    VLLMChat,
     include,
     include_hf,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "Transformers",
     "TransformersLLM",
     "TransformersVLM",
+    "VLLMChat",
     "IncludeHandle",
     "include",
     "include_hf",

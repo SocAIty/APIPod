@@ -1,5 +1,6 @@
 import functools
 import inspect
+import os
 import traceback
 from datetime import datetime, timezone
 from typing import Union, Callable, Iterator
@@ -17,12 +18,13 @@ from apipod.engine.backend.schema_resolve import (
     SchemaBinding,
     SchemaStreamSerializer,
     STREAM_CHUNK_SPECS,
+    SSE_DONE,
     iter_media_chunks,
     prepare_schema_call,
     wrap_schema_response,
 )
 from apipod.engine.streaming.stream_serializer import as_sync_iter, encode_chunk, is_streaming_result
-from apipod.engine.backend.runpod.handler_compat import as_runpod_generator_handler
+from apipod.engine.backend.runpod.handler_compat import as_runpod_async_handler
 
 from apipod.engine.utils import normalize_name, normalize_mount_prefix
 from apipod.common.settings import APIPOD_PORT
@@ -133,6 +135,31 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
                 return native_stream
 
         return wrap_schema_response(result, binding)
+
+    async def _ahandle_schema_request(self, func: Callable, binding: SchemaBinding, kwargs: dict):
+        """Async schema path so concurrent RunPod jobs can await vLLM HTTP."""
+        request = prepare_schema_call(binding, kwargs)
+        result = await self.run_callable_async(func, **kwargs)
+
+        if getattr(request, "stream", False):
+            if inspect.isasyncgen(result):
+                return self._as_native_astream(result, binding)
+            native_stream = self._as_native_stream(result, binding)
+            if native_stream is not None:
+                return native_stream
+
+        return wrap_schema_response(result, binding)
+
+    async def _as_native_astream(self, result, binding: Union[SchemaBinding, None] = None):
+        """Keep async generators on the RunPod event loop (no nested loop drain)."""
+        serializer = None
+        if binding is not None and binding.tag in STREAM_CHUNK_SPECS:
+            serializer = SchemaStreamSerializer(binding)
+        async for raw in result:
+            yield serializer.delta(raw) if serializer else encode_chunk(raw)
+        if serializer:
+            yield serializer.finish()
+            yield SSE_DONE
 
     def _as_native_stream(self, result, binding: Union[SchemaBinding, None] = None) -> Union[Iterator, None]:
         """
@@ -247,15 +274,66 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
 
         return JobResultFactory.from_base_job(job_record).model_dump_json(exclude_none=True)
 
+    async def _arouter(self, path, job, **kwargs):
+        """Async dispatch used by the concurrent RunPod handler."""
+        if not isinstance(path, str):
+            raise Exception("Path must be a string")
+
+        path = normalize_name(path, preserve_paths=True)
+        path = path.strip("/")
+
+        route_function = self._endpoint_source_funcs.get(path) or self.routes.get(path)
+        if route_function is None:
+            raise Exception(f"Route {path} not found")
+
+        kwargs = self._add_job_progress_to_kwargs(route_function, job, kwargs)
+
+        sig = inspect.signature(route_function)
+        missing_args = [arg for arg in sig.parameters if arg not in kwargs]
+        if missing_args:
+            raise Exception(f"Arguments {missing_args} are missing")
+
+        job_record = BaseJob(id=job["id"])
+        job_record.metrics.started_at = datetime.now(timezone.utc)
+        plan = self._endpoint_plans.get(path)
+
+        try:
+            if plan is not None and plan.is_schema_endpoint:
+                res = await self._ahandle_schema_request(func=route_function, binding=plan.schema_binding, kwargs=kwargs)
+            else:
+                res = await self.run_callable_async(route_function, **kwargs)
+                native_stream = self._as_native_stream(res)
+                if native_stream is not None:
+                    res = native_stream
+
+            if inspect.isgenerator(res) or inspect.isasyncgen(res):
+                return res
+
+            job_record.result = res
+            job_record.status = JOB_STATUS.FINISHED
+        except Exception as e:
+            job_record.error = str(e)
+            job_record.status = JOB_STATUS.FAILED
+            print(f"Job {job['id']} failed: {str(e)}")
+            traceback.print_exc()
+
+        for arg in kwargs.values():
+            if isinstance(arg, JobProgressRunpod):
+                job_record.job_progress = arg
+                break
+
+        job_record.metrics.finished_at = datetime.now(timezone.utc)
+
+        return JobResultFactory.from_base_job(job_record).model_dump_json(exclude_none=True)
+
     def handler(self, job):
         """
         Dispatch a RunPod job to the matching route.
 
         May return a JSON JobResult string (non-stream) or a generator of
         JSON-safe chunks (stream). :meth:`_runpod_handler` wraps this so RunPod
-        sees a generator *function* and can stream yields — returning a
-        generator object from a normal function is not enough (RunPod would
-        try to ``json.dumps`` it).
+        sees an async generator function and can overlap jobs when
+        ``MAX_CONCURRENCY`` > 1.
         """
         inputs = job["input"]
         if "path" not in inputs:
@@ -266,9 +344,27 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
 
         return self._router(route, job, **inputs)
 
+    async def ahandler(self, job):
+        """Async dispatch: awaits schema/vLLM routes instead of blocking the loop."""
+        inputs = dict(job["input"])
+        if "path" not in inputs:
+            raise Exception("No path provided")
+        route = inputs.pop("path")
+        return await self._arouter(route, job, **inputs)
+
     def _runpod_handler(self):
-        """Handler registered with RunPod (true generator function)."""
-        return as_runpod_generator_handler(self.handler)
+        """Handler registered with RunPod (async generator function)."""
+        return as_runpod_async_handler(self.ahandler)
+
+    @staticmethod
+    def _runpod_start_config(handler) -> dict:
+        """Shared RunPod worker config, including in-worker concurrency."""
+        max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "1"))
+        return {
+            "handler": handler,
+            "concurrency_modifier": lambda _current, value=max_concurrency: value,
+            "return_aggregate_stream": True,
+        }
 
     def start_runpod_serverless_localhost(self, port):
         # add the -rp_serve_api to the command line arguments to allow debugging
@@ -312,10 +408,7 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
 
         rp_fastapi.WorkerAPI = WorkerAPIWithModifiedInfo
 
-        runpod.serverless.start({
-            "handler": self._runpod_handler(),
-            "return_aggregate_stream": True,
-        })
+        runpod.serverless.start(self._runpod_start_config(self._runpod_handler()))
 
     def _create_openapi_compatible_function(
         self,
@@ -484,7 +577,4 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
             self.start_runpod_serverless_localhost(port=port)
         else:
             import runpod.serverless
-            runpod.serverless.start({
-                "handler": self._runpod_handler(),
-                "return_aggregate_stream": True,
-            })
+            runpod.serverless.start(self._runpod_start_config(self._runpod_handler()))

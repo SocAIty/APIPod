@@ -101,9 +101,10 @@ import apipod
 
 llm = apipod.TransformersLLM("Qwen/Qwen2.5-7B-Instruct")      # chat LLM: generate / stream / embed_text
 vlm = apipod.TransformersVLM("Qwen/Qwen3-VL-8B-Instruct")     # vision-language: image chat / stream / embed
+vllm = apipod.VLLMChat("Qwen/Qwen3.8-27B-FP8")               # local `vllm serve` subprocess, concurrent /chat
 ```
 
-Both pick the fastest attention backend on the machine (flash-attn 2 when installed on an Ampere+ GPU, PyTorch SDPA otherwise). Subclass `apipod.Model` for custom load logic.
+Transformers presets pick the fastest attention backend on the machine (flash-attn 2 when installed on an Ampere+ GPU, PyTorch SDPA otherwise). `VLLMChat` never imports vLLM: it spawns the CLI, waits for `/health`, and proxies OpenAI chat HTTP (set `MAX_CONCURRENCY` so the RunPod worker feeds several jobs into that server). Subclass `apipod.Model` for custom load logic.
 
 ## Serve a Model in One Call
 
