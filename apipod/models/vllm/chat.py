@@ -9,6 +9,7 @@ from __future__ import annotations
 import atexit
 import base64
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -27,6 +28,17 @@ from apipod.models.vllm import config as vllm_config
 
 _HEALTH_POLL_S = 2.0
 _HTTP_TIMEOUT_S = 3600.0
+_VLLM_LOG_PATH = "/tmp/apipod-vllm.log"
+_FIRST_CLASS_FLAGS = {
+    "--host",
+    "--port",
+    "--max-model-len",
+    "--max-num-seqs",
+    "--enable-auto-tool-choice",
+    "--tool-call-parser",
+    "--reasoning-parser",
+    "--speculative-config",
+}
 
 
 def _as_uint8(arr):
@@ -90,6 +102,29 @@ def _content_parts(content, images=None) -> Any:
     return content
 
 
+def _extend_without_duplicates(argv: List[str], extra: str) -> None:
+    """Append EXTRA_ARGS, skipping flags already set as first-class argv.
+
+    Platform env can still carry an old EXTRA_ARGS string that repeats
+    --enable-auto-tool-choice / --tool-call-parser after we moved them out.
+    """
+    tokens = shlex.split(extra)
+    present = {item.split("=")[0] for item in argv if item.startswith("--")}
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        flag = token.split("=")[0] if token.startswith("--") else ""
+        takes_value = flag in _FIRST_CLASS_FLAGS and "=" not in token
+        skip_value = takes_value and index + 1 < len(tokens) and not tokens[index + 1].startswith("-")
+        if flag in present:
+            index += 2 if skip_value else 1
+            continue
+        argv.append(token)
+        if flag:
+            present.add(flag)
+        index += 1
+
+
 def _speculative_argv(raw: str) -> List[str]:
     speculative_config = raw.strip()
     if not speculative_config:
@@ -132,6 +167,9 @@ class VLLMChat(Model):
         self._proc: Optional[subprocess.Popen] = None
         self._log_tail: Deque[str] = deque(maxlen=80)
         self._log_thread: Optional[threading.Thread] = None
+        self._argv: List[str] = []
+        self._log_path = _VLLM_LOG_PATH
+        self._log_file = None
         self._base_url = f"http://{vllm_config.HOST}:{vllm_config.PORT}"
 
     def load(self) -> None:
@@ -163,20 +201,26 @@ class VLLMChat(Model):
             argv.extend(["--reasoning-parser", vllm_config.REASONING_PARSER])
         argv.extend(_speculative_argv(vllm_config.SPECULATIVE_CONFIG))
         if extra:
-            argv.extend(shlex.split(extra))
+            _extend_without_duplicates(argv, extra)
 
+        self._argv = argv
         mode = "speculative" if vllm_config.SPECULATIVE_CONFIG.strip() else "standard"
+        command = shlex.join(argv)
         print(
             f"[apipod] Starting vLLM model={self.weights.ref} "
             f"endpoint=http://{host}:{port} mode={mode} max_num_seqs={max_num_seqs}",
             flush=True,
         )
+        print(f"[apipod] vLLM command: {command}", flush=True)
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        self._log_file = open(self._log_path, "w", encoding="utf-8", buffering=1)
         self._proc = subprocess.Popen(
             argv,
-            stdout=subprocess.PIPE,
+            stdout=self._log_file,
             stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            env=env,
+            start_new_session=True,
         )
         self._log_thread = threading.Thread(target=self._pump_logs, daemon=True)
         self._log_thread.start()
@@ -189,33 +233,65 @@ class VLLMChat(Model):
             raise
 
     def _pump_logs(self) -> None:
-        proc = self._proc
-        stdout = getattr(proc, "stdout", None) if proc is not None else None
-        if stdout is None:
-            return
-        for line in stdout:
-            text = line.rstrip("\n")
-            self._log_tail.append(text)
-            print(text, flush=True)
+        """Follow the vLLM log file so EngineCore output is not stuck in a PIPE."""
+        with open(self._log_path, "r", encoding="utf-8", errors="replace") as log_file:
+            while True:
+                line = log_file.readline()
+                if line:
+                    text = line.rstrip("\n")
+                    self._log_tail.append(text)
+                    print(text, flush=True)
+                    continue
+                if self._proc is not None and self._proc.poll() is not None:
+                    leftover = log_file.read()
+                    if leftover:
+                        for text in leftover.splitlines():
+                            self._log_tail.append(text)
+                            print(text, flush=True)
+                    return
+                time.sleep(0.05)
 
     def _startup_error(self, prefix: str) -> RuntimeError:
+        if self._log_file is not None:
+            try:
+                self._log_file.flush()
+            except OSError:
+                pass
         if self._log_thread is not None:
-            self._log_thread.join(timeout=2)
+            self._log_thread.join(timeout=5)
+        parts = [prefix]
+        if self._argv:
+            parts.append("command: " + shlex.join(self._argv))
         tail = "\n".join(self._log_tail)
+        if not tail:
+            try:
+                with open(self._log_path, "r", encoding="utf-8", errors="replace") as log_file:
+                    tail = log_file.read().strip()
+            except OSError:
+                tail = ""
         if tail:
-            return RuntimeError(f"{prefix}\n--- vllm serve log tail ---\n{tail}")
-        return RuntimeError(prefix)
+            parts.append("--- vllm serve log tail ---\n" + tail)
+        else:
+            parts.append("(no vLLM stdout captured)")
+        return RuntimeError("\n".join(parts))
 
     def _stop(self) -> None:
         proc = self._proc
-        if proc is None or proc.poll() is not None:
-            return
-        proc.terminate()
-        try:
-            proc.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        log_file = self._log_file
+        if log_file is not None:
+            try:
+                log_file.flush()
+                log_file.close()
+            except OSError:
+                pass
+            self._log_file = None
 
     def _wait_healthy(self, timeout: Optional[int] = None) -> None:
         if timeout is None:
