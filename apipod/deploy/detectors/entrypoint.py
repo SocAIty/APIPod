@@ -141,7 +141,13 @@ class EntrypointDetector(Detector):
             if "app.start()" in content or "uvicorn.run" in content:
                 return True
             if "from apipod import" in content or "import apipod" in content:
-                if "serve(" in content or "TransformersLLM" in content or "TransformersVLM" in content or "VLLMChat" in content:
+                if (
+                    "serve(" in content
+                    or "TransformersLLM" in content
+                    or "TransformersVLM" in content
+                    or "VLLMChat" in content
+                    or "Chat(" in content
+                ):
                     return True
 
             return False

@@ -94,17 +94,17 @@ def transcribe(audio: AudioFile):
 
 ## Model Loading Presets
 
-Declare your weights; APIPod loads them at app start and the platform pre-stages them per provider (RunPod HF cache, image baking). Two built-in presets cover the transformers library:
+Declare your weights; APIPod loads them at app start and the platform pre-stages them per provider (RunPod HF cache, image baking). `Chat` is the public chat preset; transformers classes remain for embeddings and custom load logic:
 
 ```python
 import apipod
 
+chat = apipod.Chat("Qwen/Qwen3.8-27B-FP8")                   # /chat; vLLM if CLI is on PATH, else transformers
 llm = apipod.TransformersLLM("Qwen/Qwen2.5-7B-Instruct")      # chat LLM: generate / stream / embed_text
 vlm = apipod.TransformersVLM("Qwen/Qwen3-VL-8B-Instruct")     # vision-language: image chat / stream / embed
-vllm = apipod.VLLMChat("Qwen/Qwen3.8-27B-FP8")               # local `vllm serve` subprocess, concurrent /chat
 ```
 
-Transformers presets pick the fastest attention backend on the machine (flash-attn 2 when installed on an Ampere+ GPU, PyTorch SDPA otherwise). `VLLMChat` never imports vLLM: it spawns the CLI, waits for `/health`, and proxies OpenAI chat HTTP (set `MAX_CONCURRENCY` so the RunPod worker feeds several jobs into that server). Subclass `apipod.Model` for custom load logic.
+`Chat` picks the engine for you (`engine=` or `APIPOD_ENGINE=transformers` to force Hugging Face). Transformers presets pick the fastest attention backend on the machine (flash-attn 2 when installed on an Ampere+ GPU, PyTorch SDPA otherwise). The vLLM engine never imports vLLM: it spawns the CLI, waits for `/health`, and proxies OpenAI chat HTTP (set `MAX_CONCURRENCY` so the RunPod worker feeds several jobs into that server). Subclass `apipod.Model` for custom load logic.
 
 ## Serve a Model in One Call
 
@@ -113,10 +113,10 @@ Transformers presets pick the fastest attention backend on the machine (flash-at
 ```python
 import apipod
 
-model = apipod.TransformersVLM("Qwen/Qwen3-VL-8B-Instruct")
+model = apipod.Chat("Qwen/Qwen3-VL-8B-Instruct")
 
 if __name__ == "__main__":
-    apipod.serve(model, title="Qwen3-VL", description="...")   # /chat (image+text) + /embeddings
+    apipod.serve(model, title="Qwen3-VL", description="...")   # /chat (image+text)
 ```
 
 Endpoint mapping: `generate`/`stream` -> `/chat`, `embed` or `embed_text` -> `/embeddings`, `generate_image` -> `/images`. Custom `apipod.Model` subclasses participate by implementing methods with those names. For custom routes, build an `APIPod` app yourself (or pass it via `serve(model, app=app)`).

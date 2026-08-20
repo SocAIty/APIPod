@@ -16,7 +16,7 @@ _MIN_GPU_DISK_GB = 20
 _MAX_DISK_GB = 200
 _VRAM_SKUS = (16, 24, 40, 48, 80, 141)
 _GPU_PROFILES = frozenset({"ml-gpu", "gpu"})
-_GPU_MODEL_CLASS_MARKERS = ("Transformers", "Diffusers", "LLM", "VLM", "StableDiffusion", "VLLM")
+_GPU_MODEL_CLASS_MARKERS = ("Transformers", "Diffusers", "LLM", "VLM", "StableDiffusion", "VLLM", "Chat")
 
 
 def parse_param_billions(text: str) -> Optional[float]:
@@ -45,6 +45,7 @@ _HF_CALL_NAMES = frozenset({
     "TransformersVLM",
     "Transformers",
     "VLLMChat",
+    "Chat",
 })
 
 

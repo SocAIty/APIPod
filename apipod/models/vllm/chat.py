@@ -1,4 +1,4 @@
-"""vLLM-backed chat preset: spawn ``vllm serve``, proxy OpenAI HTTP.
+"""vLLM-backed chat engine: spawn ``vllm serve``, proxy OpenAI HTTP.
 
 The worker process never imports vLLM (same shape as RunPod worker-vllm).
 ``load()`` starts the CLI, polls ``/health``, and inference is HTTP to
@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import atexit
 import base64
-import io
 import json
 import shlex
 import shutil
@@ -19,31 +18,60 @@ from collections import deque
 from typing import Any, AsyncIterator, Deque, Iterator, List, Optional, Union
 
 import httpx
+from media_toolkit import ImageFile
 
 from apipod.common.chat_parsing import ChatOutputParser, parse_chat_output
-from apipod.common.settings import (
-    VLLM_EXTRA_ARGS,
-    VLLM_HOST,
-    VLLM_MAX_MODEL_LEN,
-    VLLM_MAX_NUM_SEQS,
-    VLLM_PORT,
-    VLLM_REASONING_PARSER,
-    VLLM_SPECULATIVE_CONFIG,
-    VLLM_STARTUP_TIMEOUT,
-)
 from apipod.models.includes import IncludeHandle, include_hf
 from apipod.models.model import Model
-from apipod.models.transformers.vlm import to_pil_image
+from apipod.models.vllm import config as vllm_config
 
 _HEALTH_POLL_S = 2.0
 _HTTP_TIMEOUT_S = 3600.0
 
 
+def _as_uint8(arr):
+    import numpy as np
+
+    if arr.dtype == np.uint8:
+        return arr
+    max_val = float(arr.max()) if arr.size else 0.0
+    if np.issubdtype(arr.dtype, np.floating) and max_val <= 1.0:
+        arr = arr * 255.0
+    return np.clip(arr, 0, 255).astype(np.uint8)
+
+
+def _to_bgr(image):
+    """media-toolkit ImageFile is BGR; raw ndarrays are treated as RGB."""
+    import cv2
+    import numpy as np
+
+    if isinstance(image, ImageFile) or hasattr(image, "to_np_array"):
+        return _as_uint8(np.asarray(image.to_np_array()))
+    if isinstance(image, (bytes, bytearray, memoryview)):
+        decoded = cv2.imdecode(np.frombuffer(bytes(image), np.uint8), cv2.IMREAD_UNCHANGED)
+        if decoded is None:
+            raise ValueError("Could not decode image bytes.")
+        return decoded
+    arr = _as_uint8(np.asarray(image))
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+    if arr.ndim == 3 and arr.shape[2] == 4:
+        return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGRA)
+    return arr
+
+
 def _to_data_url(image) -> str:
-    """APIPod/PIL/bytes image -> PNG data URI for OpenAI ``image_url`` parts."""
-    buffer = io.BytesIO()
-    to_pil_image(image).save(buffer, format="PNG")
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    """APIPod/cv2/bytes image -> PNG data URI for OpenAI ``image_url`` parts.
+
+    ``ImageFile.to_np_array()`` is BGR. ``cv2.imencode`` expects BGR, so do not
+    convert to RGB first.
+    """
+    import cv2
+
+    ok, buf = cv2.imencode(".png", _to_bgr(image))
+    if not ok:
+        raise ValueError("Failed to encode image as PNG.")
+    encoded = base64.b64encode(buf.tobytes()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
 
 
@@ -60,6 +88,27 @@ def _content_parts(content, images=None) -> Any:
             parts.extend(content or [])
         return parts
     return content
+
+
+def _speculative_argv(raw: str) -> List[str]:
+    speculative_config = raw.strip()
+    if not speculative_config:
+        return []
+    try:
+        parsed = json.loads(speculative_config)
+    except json.JSONDecodeError as exc:
+        raise ValueError("APIPOD_VLLM_SPECULATIVE_CONFIG must be valid JSON.") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("APIPOD_VLLM_SPECULATIVE_CONFIG must be a JSON object.")
+    return ["--speculative-config", json.dumps(parsed, separators=(",", ":"))]
+
+
+class _SseParseState:
+    """Streaming parse: native OpenAI deltas win over Hermes tag scraping."""
+
+    def __init__(self):
+        self.parser = ChatOutputParser()
+        self.native_tool_calls = False
 
 
 class VLLMChat(Model):
@@ -83,7 +132,7 @@ class VLLMChat(Model):
         self._proc: Optional[subprocess.Popen] = None
         self._log_tail: Deque[str] = deque(maxlen=80)
         self._log_thread: Optional[threading.Thread] = None
-        self._base_url = f"http://{VLLM_HOST}:{VLLM_PORT}"
+        self._base_url = f"http://{vllm_config.HOST}:{vllm_config.PORT}"
 
     def load(self) -> None:
         binary = shutil.which("vllm")
@@ -92,14 +141,12 @@ class VLLMChat(Model):
                 "vllm CLI not found on PATH. Install vLLM in the image "
                 "(pip install vllm) or set APIPOD_ENGINE=transformers."
             )
-        host = VLLM_HOST
-        port = VLLM_PORT
-        max_len = VLLM_MAX_MODEL_LEN
-        max_num_seqs = VLLM_MAX_NUM_SEQS or "256"
-        parser = VLLM_REASONING_PARSER
-        speculative_config = VLLM_SPECULATIVE_CONFIG.strip()
-        extra = VLLM_EXTRA_ARGS.strip()
-        timeout = VLLM_STARTUP_TIMEOUT
+        host = vllm_config.HOST
+        port = vllm_config.PORT
+        max_len = vllm_config.MAX_MODEL_LEN
+        max_num_seqs = vllm_config.MAX_NUM_SEQS or "256"
+        extra = vllm_config.EXTRA_ARGS.strip()
+        timeout = vllm_config.STARTUP_TIMEOUT
         argv = [
             binary, "serve", str(self.weights.ref),
             "--host", host,
@@ -108,27 +155,17 @@ class VLLMChat(Model):
         if max_len:
             argv.extend(["--max-model-len", max_len])
         argv.extend(["--max-num-seqs", str(max_num_seqs)])
-        if parser:
-            argv.extend(["--reasoning-parser", parser])
-        if speculative_config:
-            try:
-                parsed_speculative_config = json.loads(speculative_config)
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    "APIPOD_VLLM_SPECULATIVE_CONFIG must be valid JSON."
-                ) from exc
-            if not isinstance(parsed_speculative_config, dict):
-                raise ValueError(
-                    "APIPOD_VLLM_SPECULATIVE_CONFIG must be a JSON object."
-                )
-            argv.extend([
-                "--speculative-config",
-                json.dumps(parsed_speculative_config, separators=(",", ":")),
-            ])
+        if vllm_config.ENABLE_AUTO_TOOL_CHOICE and vllm_config.TOOL_CALL_PARSER:
+            argv.extend(["--enable-auto-tool-choice", "--tool-call-parser", vllm_config.TOOL_CALL_PARSER])
+        elif vllm_config.TOOL_CALL_PARSER:
+            argv.extend(["--tool-call-parser", vllm_config.TOOL_CALL_PARSER])
+        if vllm_config.REASONING_PARSER:
+            argv.extend(["--reasoning-parser", vllm_config.REASONING_PARSER])
+        argv.extend(_speculative_argv(vllm_config.SPECULATIVE_CONFIG))
         if extra:
             argv.extend(shlex.split(extra))
 
-        mode = "speculative" if speculative_config else "standard"
+        mode = "speculative" if vllm_config.SPECULATIVE_CONFIG.strip() else "standard"
         print(
             f"[apipod] Starting vLLM model={self.weights.ref} "
             f"endpoint=http://{host}:{port} mode={mode} max_num_seqs={max_num_seqs}",
@@ -180,7 +217,9 @@ class VLLMChat(Model):
             proc.kill()
             proc.wait(timeout=5)
 
-    def _wait_healthy(self, timeout: int = VLLM_STARTUP_TIMEOUT) -> None:
+    def _wait_healthy(self, timeout: Optional[int] = None) -> None:
+        if timeout is None:
+            timeout = vllm_config.STARTUP_TIMEOUT
         url = f"{self._base_url}/health"
         deadline = time.monotonic() + timeout
         with httpx.Client(timeout=10, trust_env=False) as client:
@@ -252,7 +291,15 @@ class VLLMChat(Model):
             body["seed"] = seed
         if tools:
             body["tools"] = [t if isinstance(t, dict) else t.model_dump() for t in tools]
-        if tool_choice is not None:
+            if tool_choice is None:
+                body["tool_choice"] = "auto"
+            else:
+                body["tool_choice"] = (
+                    tool_choice
+                    if isinstance(tool_choice, (str, dict))
+                    else tool_choice.model_dump(exclude_none=True)
+                )
+        elif tool_choice is not None:
             body["tool_choice"] = (
                 tool_choice
                 if isinstance(tool_choice, (str, dict))
@@ -272,14 +319,35 @@ class VLLMChat(Model):
         message = choice.get("message") or {}
         text = message.get("content") or ""
         reasoning = message.get("reasoning_content")
-        parsed = parse_chat_output(text)
-        if reasoning and not parsed.get("reasoning_content"):
-            parsed["reasoning_content"] = reasoning
-        if message.get("tool_calls"):
-            parsed["tool_calls"] = message["tool_calls"]
+        native_tools = message.get("tool_calls")
         usage = payload.get("usage") or {}
         prompt_tokens = int(usage.get("prompt_tokens") or 0)
         completion_tokens = int(usage.get("completion_tokens") or 0)
+
+        if native_tools:
+            assistant = {
+                "role": message.get("role") or "assistant",
+                "content": text or None,
+                "tool_calls": native_tools,
+            }
+            if reasoning:
+                assistant["reasoning_content"] = reasoning
+            return {
+                "choices": [{
+                    "index": 0,
+                    "message": assistant,
+                    "finish_reason": choice.get("finish_reason") or "tool_calls",
+                }],
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens,
+                },
+            }
+
+        parsed = parse_chat_output(text)
+        if reasoning and not parsed.get("reasoning_content"):
+            parsed["reasoning_content"] = reasoning
         is_plain = (
             not parsed.get("tool_calls")
             and not parsed.get("reasoning_content")
@@ -381,13 +449,13 @@ class VLLMChat(Model):
             messages, images, temperature, max_tokens, top_p, stop, seed,
             tools, tool_choice, stream=True,
         )
-        parser = ChatOutputParser()
+        state = _SseParseState()
         with httpx.Client(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
             with client.stream("POST", self._completion_url(), json=body) as response:
                 self._raise_for_status(response)
                 for line in response.iter_lines():
-                    yield from _parse_sse_delta(line, parser)
-        yield from parser.flush()
+                    yield from _parse_sse_delta(line, state)
+        yield from state.parser.flush()
 
     async def astream(
         self,
@@ -406,19 +474,24 @@ class VLLMChat(Model):
             messages, images, temperature, max_tokens, top_p, stop, seed,
             tools, tool_choice, stream=True,
         )
-        parser = ChatOutputParser()
+        state = _SseParseState()
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
             async with client.stream("POST", self._completion_url(), json=body) as response:
                 self._raise_for_status(response)
                 async for line in response.aiter_lines():
-                    for delta in _parse_sse_delta(line, parser):
+                    for delta in _parse_sse_delta(line, state):
                         yield delta
-        for delta in parser.flush():
+        for delta in state.parser.flush():
             yield delta
 
 
-def _parse_sse_delta(line: str, parser: ChatOutputParser) -> Iterator:
-    """Convert one vLLM SSE event into APIPod chat deltas."""
+def _parse_sse_delta(line: str, state: _SseParseState) -> Iterator:
+    """Convert one vLLM SSE event into APIPod chat deltas.
+
+    Native ``delta.tool_calls`` / ``reasoning_content`` are forwarded as-is.
+    Content is Hermes-parsed only until native tool_calls appear; after that
+    leftover content is yielded as plain text.
+    """
     raw = (line or "").strip()
     if not raw.startswith("data:"):
         return
@@ -436,8 +509,14 @@ def _parse_sse_delta(line: str, parser: ChatOutputParser) -> Iterator:
         for key in ("role", "reasoning_content", "tool_calls", "refusal")
         if delta.get(key) is not None
     }
+    if typed.get("tool_calls"):
+        state.native_tool_calls = True
     if typed:
         yield typed
     content = delta.get("content")
-    if content:
-        yield from parser.feed(content)
+    if not content:
+        return
+    if state.native_tool_calls:
+        yield content
+        return
+    yield from state.parser.feed(content)
