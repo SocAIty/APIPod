@@ -171,7 +171,7 @@ class JobQueue(JobQueueInterface[T]):
         """ Override this method to add custom job removal logic """
         self.job_store.remove_completed_job(job.id)
 
-    def cancel_job(self, job_id: str) -> None:
+    def cancel_job(self, job_id: str, action: str = "cancel") -> None:
         raise NotImplementedError("Job cancellation is not implemented yet.")
         # if job := self.get_job(job_id):
         #    job.status = JOB_STATUS.FAILED

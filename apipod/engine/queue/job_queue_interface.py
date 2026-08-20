@@ -68,8 +68,8 @@ class JobQueueInterface(Generic[T], ABC):
         ...
 
     @abstractmethod
-    def cancel_job(self, job_id: str) -> Optional[dict]:
-        """Cancel a job.
+    def cancel_job(self, job_id: str, action: str = "cancel") -> Optional[dict]:
+        """Stop a job. ``action`` is ``cancel`` (kill) or ``interrupt`` (graceful).
 
         Returns an optional cancellation summary dict (``id`` / ``status`` /
         ``message``) for the HTTP response; ``None`` means "cancelled, use the

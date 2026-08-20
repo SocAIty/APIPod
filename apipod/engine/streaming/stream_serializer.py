@@ -16,6 +16,7 @@ from here instead of each maintaining their own copy.
 import asyncio
 import base64
 import inspect
+import json
 from typing import Any, Iterator, Optional
 
 from media_toolkit import MediaFile
@@ -27,6 +28,7 @@ from apipod.engine.backend.schema_resolve import (
     SSE_DONE,
     SSE_STREAM_TAGS,
     STREAM_CHUNK_SPECS,
+    is_stream_event,
     wrap_schema_response,
 )
 from apipod.engine.jobs.job_result import JobResultFactory
@@ -80,10 +82,17 @@ def _to_base64(chunk: Any) -> Optional[str]:
 def encode_chunk(chunk: Any) -> str:
     """JSON-safe encoding without SSE framing (for RunPod transport).
 
-    Binary / MediaFile → base64 string; str → unchanged; other → str().
+    Binary / MediaFile → base64 string; str → unchanged; dict events → JSON;
+    other → str().
     """
     b64 = _to_base64(chunk)
-    return b64 if b64 is not None else (chunk if isinstance(chunk, str) else str(chunk))
+    if b64 is not None:
+        return b64
+    if isinstance(chunk, str):
+        return chunk
+    if isinstance(chunk, dict):
+        return json.dumps(chunk)
+    return str(chunk)
 
 
 def store_chunk(chunk: Any) -> str:
@@ -118,13 +127,29 @@ def aggregate_schema_tokens(items: list, binding: SchemaBinding) -> Any:
 
     Plain token streams are joined into one text (tag parsing happens in the
     wrap). Typed chat deltas (dicts for reasoning / tool calls) are folded
-    into a full assistant message.
+    into a full assistant message. Structured passthrough events (e.g.
+    ``agent.interrupt``) merge their fields into the final response.
     """
-    if binding.tag == "chat" and any(isinstance(item, dict) for item in items):
-        message = combine_deltas(items)
-        finish_reason = "tool_calls" if message.get("tool_calls") else "stop"
-        result = {"choices": [{"index": 0, "message": message, "finish_reason": finish_reason}]}
-        return JobResultFactory._serialize_result(wrap_schema_response(result, binding))
+    if binding.tag == "chat":
+        events = [item for item in items if is_stream_event(item)]
+        deltas = [item for item in items if not is_stream_event(item)]
+        extra: dict = {}
+        for event in events:
+            if event.get("object") == "agent.interrupt":
+                extra.update({k: v for k, v in event.items() if k != "object"})
+        if any(isinstance(item, dict) for item in deltas) or extra:
+            if any(isinstance(item, dict) for item in deltas):
+                message = combine_deltas(deltas)
+            else:
+                message = {"role": "assistant", "content": "".join(str(i) for i in deltas)}
+            # finish_reason stays OpenAI-strict; interruption travels in the
+            # merged agent fields (status / pending_actions).
+            finish_reason = "tool_calls" if message.get("tool_calls") else "stop"
+            result = {
+                "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+                **extra,
+            }
+            return JobResultFactory._serialize_result(wrap_schema_response(result, binding))
     return JobResultFactory._serialize_result(
         wrap_schema_response("".join(str(i) for i in items), binding)
     )
