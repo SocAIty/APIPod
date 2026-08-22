@@ -15,6 +15,9 @@ _MIN_CPU_DISK_GB = 5
 _MIN_GPU_DISK_GB = 20
 _MAX_DISK_GB = 200
 _VRAM_SKUS = (16, 24, 40, 48, 80, 141)
+_VRAM_GB_PER_BILLION_BF16 = 2.5
+_VRAM_GB_PER_BILLION_FP8 = 1.25
+_QUANT_REF = re.compile(r"(?:FP8|INT8|GPTQ|AWQ|W8A8|8BIT)", re.I)
 _GPU_PROFILES = frozenset({"ml-gpu", "gpu"})
 _GPU_MODEL_CLASS_MARKERS = ("Transformers", "Diffusers", "LLM", "VLM", "StableDiffusion", "VLLM", "Chat")
 
@@ -155,14 +158,20 @@ def estimate_disk_gb(*, hf_refs: Optional[List[str]] = None, gpu: bool = False) 
 
 
 def estimate_gpu_vram_gb(hf_refs: Optional[List[str]] = None) -> int:
-    """Smallest common GPU SKU that can hold a BF16 checkpoint plus activations."""
+    """Smallest common GPU SKU for the checkpoint precision plus activations.
+
+    FP8/INT8 refs use a tighter GB/B than BF16. An explicit ``gpu_vram_gb``
+    in apipod.json is left unchanged by ``apply_resource_defaults``.
+    """
     known = [
         p for p in (parse_param_billions(ref) for ref in (hf_refs or []))
         if p and p > 0
     ]
     if not known:
         return 16
-    needed = int(max(known) * 2.5) + 8
+    quantized = any(_QUANT_REF.search(ref or "") for ref in (hf_refs or []))
+    per_billion = _VRAM_GB_PER_BILLION_FP8 if quantized else _VRAM_GB_PER_BILLION_BF16
+    needed = int(max(known) * per_billion) + 8
     for sku in _VRAM_SKUS:
         if needed <= sku:
             return sku
