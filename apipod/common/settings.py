@@ -17,6 +17,10 @@ APIPOD_NATIVE = environ.get("APIPOD_NATIVE", "").strip().lower() in ("1", "true"
 APIPOD_HOST = environ.get("APIPOD_HOST", "0.0.0.0")
 APIPOD_PORT = int(environ.get("APIPOD_PORT", 8000))
 
+# RunPod worker in-flight jobs. Default 1 keeps transformers services serial.
+# Official worker-vllm reads the same name into concurrency_modifier.
+MAX_CONCURRENCY = max(1, int(environ.get("MAX_CONCURRENCY", "1")))
+
 SERVER_DOMAIN = environ.get("SERVER_DOMAIN", "")
 
 DEFAULT_DATE_TIME_FORMAT = environ.get("FTAPI_DATETIME_FORMAT", '%Y-%m-%dT%H:%M:%S.%f%z')

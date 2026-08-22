@@ -21,7 +21,7 @@ apipod/
 ├── api.py                  # APIPod() factory: resolves intent → backend instance
 ├── serve.py                # serve(model): capability-based endpoint registration + start
 ├── common/
-│   ├── settings.py         # Env-driven config (APIPOD_SIMULATE / _DIRECT / _COMPUTE / _PROVIDER, cert, host, port)
+│   ├── settings.py         # Env-driven config (compute/provider, MAX_CONCURRENCY, cert, host, port)
 │   ├── constants.py        # Enums: COMPUTE, PROVIDER, SERVER_HEALTH
 │   └── schemas/
 │       └── __init__.py     # Re-exports from socaity-schemas (OpenAI-compatible request/response + FileModel)
@@ -39,11 +39,25 @@ apipod/
 ├── models/
 │   ├── includes.py         # include / include_hf handles (declare bytes, resolve lazily)
 │   ├── model.py            # Model base: load()/warmup(), registry, app-start loading
-│   └── transformers/       # Transformers base + TransformersLLM / TransformersVLM presets
+│   ├── chat.py             # Chat(): capability preset; picks vLLM or transformers
+│   ├── transformers/       # Transformers base + TransformersLLM / TransformersVLM presets
+│   └── vllm/               # VLLMChat engine: spawn `vllm serve`, OpenAI HTTP generate/agenerate
 └── deploy/                 # `apipod build`: Dockerfile generation, dependency/CUDA detection
 ```
 
-### Model presets (`apipod/models/transformers`)
+### Chat (`apipod/models/chat.py`)
+
+``Chat`` is the public chat preset. Users construct ``Chat("org/model")``; they
+do not choose ``VLLMChat`` vs ``TransformersVLM``. Engine pick is ``engine=``
+kwarg, then ``APIPOD_ENGINE``, then ``vllm`` if the CLI is on PATH, else
+``transformers``. ``generate`` always accepts ``images`` so ``serve()``
+registers vision ``/chat``. The vLLM backend is still a subprocess (never an
+import of the vLLM Python API). ``VLLMChat`` remains for direct use.
+
+The engine instance is built with ``object.__new__`` so it is not appended to
+the Model registry; only the ``Chat`` facade is declared.
+
+### Transformers presets (`apipod/models/transformers`)
 
 ``Transformers(Model)`` centralizes what every HF-backed preset shares: include
 normalization, ``from_pretrained`` kwargs (``dtype="auto"``, ``device_map="auto"``
@@ -55,6 +69,23 @@ are the concrete presets. ``TransformersVLM`` resolves the model class through
 the auto-class ladder ``AutoModelForImageTextToText`` →
 ``AutoModelForMultimodalLM``, which covers Qwen-VL generations as well as
 encoder-free unified models like Gemma 4.
+
+### vLLM engine (`apipod/models/vllm`)
+
+``VLLMChat`` is the vLLM engine behind ``Chat``, not a second public preset.
+It does not import vLLM. ``load()`` spawns ``vllm serve`` using options from
+``apipod.models.vllm.config`` (``APIPOD_VLLM_*``), polls ``/health``, and
+``generate``/``agenerate`` POST to ``/v1/chat/completions``. Those env vars are
+engine argv, not APIPod process settings; they do not live in
+``common/settings.py``. Native OpenAI ``message.tool_calls`` are used as-is
+when the server emits them (enable auto tool-choice plus a tool-call parser).
+Images are encoded with cv2 from BGR numpy, never Pillow. The RunPod worker
+honors ``MAX_CONCURRENCY`` via ``concurrency_modifier`` so several queue jobs
+await that HTTP server on one GPU. ``serve()`` registers ``/chat`` only (no
+embeddings). ``APIPOD_VLLM_SPECULATIVE_CONFIG`` maps to vLLM's
+``--speculative-config`` JSON argument; for example Qwen3.8's built-in MTP
+head uses ``{"method":"mtp","num_speculative_tokens":3}``. Depth 5 is a
+Blackwell latency experiment, not the recipe default.
 
 ### serve() (`apipod/serve.py`)
 

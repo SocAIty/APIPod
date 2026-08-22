@@ -1,8 +1,11 @@
 """Local disk / GPU defaults for apipod.json (no backend required)."""
 from __future__ import annotations
 
+import ast
+import os
 import re
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 _PARAM_SUFFIX = re.compile(r"[-_](\d+(?:\.\d+)?)[Bb](?:[-_.]|$)")
 _MOE_PARAMS = re.compile(r"(\d+)x(\d+(?:\.\d+)?)[Bb]")
@@ -12,8 +15,11 @@ _MIN_CPU_DISK_GB = 5
 _MIN_GPU_DISK_GB = 20
 _MAX_DISK_GB = 200
 _VRAM_SKUS = (16, 24, 40, 48, 80, 141)
+_VRAM_GB_PER_BILLION_BF16 = 2.5
+_VRAM_GB_PER_BILLION_FP8 = 1.25
+_QUANT_REF = re.compile(r"(?:FP8|INT8|GPTQ|AWQ|W8A8|8BIT)", re.I)
 _GPU_PROFILES = frozenset({"ml-gpu", "gpu"})
-_GPU_MODEL_CLASS_MARKERS = ("Transformers", "Diffusers", "LLM", "VLM", "StableDiffusion")
+_GPU_MODEL_CLASS_MARKERS = ("Transformers", "Diffusers", "LLM", "VLM", "StableDiffusion", "VLLM", "Chat")
 
 
 def parse_param_billions(text: str) -> Optional[float]:
@@ -25,6 +31,84 @@ def parse_param_billions(text: str) -> Optional[float]:
         return float(moe.group(1)) * float(moe.group(2))
     matches = [float(m) for m in _PARAM_SUFFIX.findall(text)]
     return max(matches) if matches else None
+
+
+_HF_REF_PATTERN = re.compile(r"^[\w.-]+/[\w.-]+$")
+_MODEL_VAR_NAMES = frozenset({
+    "DEFAULT_MODEL",
+    "APIPOD_MODEL",
+    "HF_MODEL",
+    "HUGGINGFACE_MODEL",
+    "MODEL_ID",
+    "MODEL_NAME",
+})
+_HF_CALL_NAMES = frozenset({
+    "include_hf",
+    "TransformersLLM",
+    "TransformersVLM",
+    "Transformers",
+    "VLLMChat",
+    "Chat",
+})
+
+
+def _is_hf_ref(value: Any) -> bool:
+    return isinstance(value, str) and bool(_HF_REF_PATTERN.match(value.strip()))
+
+
+def discover_hf_refs(
+    project_root: Union[str, Path],
+    entrypoint: Optional[str] = None,
+) -> List[str]:
+    """Find the Hugging Face id the service will actually load.
+
+    Prefers ``APIPOD_MODEL`` / ``HF_MODEL`` in the environment, then
+    ``DEFAULT_MODEL`` (and similar) assignments in the entrypoint. Does not
+    scrape a full model catalog, which would oversize disk/VRAM.
+    """
+    for key in ("APIPOD_MODEL", "HF_MODEL", "HUGGINGFACE_MODEL", "DEFAULT_MODEL"):
+        raw = os.environ.get(key)
+        if _is_hf_ref(raw):
+            return [raw.strip()]
+
+    root = Path(project_root)
+    files: List[Path] = []
+    if entrypoint:
+        candidate = root / entrypoint
+        if candidate.is_file():
+            files.append(candidate)
+    if not files:
+        skip = {"catalog.py", "test_services.py", "conftest.py"}
+        files = [
+            path for path in sorted(root.glob("*.py"))
+            if path.name not in skip
+        ]
+
+    assigned: List[str] = []
+    constructed: List[str] = []
+    for path in files:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                if any(name in _MODEL_VAR_NAMES for name in names) and isinstance(node.value, ast.Constant):
+                    if _is_hf_ref(node.value.value):
+                        assigned.append(str(node.value.value).strip())
+            if isinstance(node, ast.Call):
+                func = node.func
+                name = getattr(func, "attr", None) or getattr(func, "id", None)
+                if name in _HF_CALL_NAMES and node.args and isinstance(node.args[0], ast.Constant):
+                    if _is_hf_ref(node.args[0].value):
+                        constructed.append(str(node.args[0].value).strip())
+    if assigned:
+        unique = list(dict.fromkeys(assigned))
+        if len(files) > 1 and len(unique) > 1:
+            return []
+        return unique
+    return list(dict.fromkeys(constructed))
 
 
 def extract_hf_refs(config: Dict[str, Any]) -> List[str]:
@@ -74,14 +158,20 @@ def estimate_disk_gb(*, hf_refs: Optional[List[str]] = None, gpu: bool = False) 
 
 
 def estimate_gpu_vram_gb(hf_refs: Optional[List[str]] = None) -> int:
-    """Smallest common GPU SKU that can hold a BF16 checkpoint plus activations."""
+    """Smallest common GPU SKU for the checkpoint precision plus activations.
+
+    FP8/INT8 refs use a tighter GB/B than BF16. An explicit ``gpu_vram_gb``
+    in apipod.json is left unchanged by ``apply_resource_defaults``.
+    """
     known = [
         p for p in (parse_param_billions(ref) for ref in (hf_refs or []))
         if p and p > 0
     ]
     if not known:
         return 16
-    needed = int(max(known) * 2.5) + 8
+    quantized = any(_QUANT_REF.search(ref or "") for ref in (hf_refs or []))
+    per_billion = _VRAM_GB_PER_BILLION_FP8 if quantized else _VRAM_GB_PER_BILLION_BF16
+    needed = int(max(known) * per_billion) + 8
     for sku in _VRAM_SKUS:
         if needed <= sku:
             return sku

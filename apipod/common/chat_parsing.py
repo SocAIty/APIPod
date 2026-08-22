@@ -197,7 +197,7 @@ def combine_deltas(deltas: List[Delta]) -> dict:
     """Fold typed deltas into one assistant message dict (ChatCompletionMessage shape)."""
     content: List[str] = []
     reasoning: List[str] = []
-    tool_calls: List[dict] = []
+    tool_calls: dict[int, dict] = {}
     for delta in deltas:
         if isinstance(delta, str):
             content.append(delta)
@@ -207,13 +207,26 @@ def combine_deltas(deltas: List[Delta]) -> dict:
         if delta.get("reasoning_content"):
             reasoning.append(delta["reasoning_content"])
         for call in delta.get("tool_calls") or []:
-            tool_calls.append({key: value for key, value in call.items() if key != "index"})
+            index = int(call.get("index", len(tool_calls)))
+            combined = tool_calls.setdefault(
+                index,
+                {"id": None, "type": "function", "function": {"name": "", "arguments": ""}},
+            )
+            if call.get("id"):
+                combined["id"] = call["id"]
+            if call.get("type"):
+                combined["type"] = call["type"]
+            function = call.get("function") or {}
+            if function.get("name"):
+                combined["function"]["name"] += function["name"]
+            if function.get("arguments"):
+                combined["function"]["arguments"] += function["arguments"]
 
     message: dict = {"role": "assistant", "content": "".join(content).strip() or None}
     if reasoning:
         message["reasoning_content"] = "".join(reasoning).strip()
     if tool_calls:
-        message["tool_calls"] = tool_calls
+        message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
     return message
 
 

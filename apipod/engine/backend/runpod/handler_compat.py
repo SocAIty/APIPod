@@ -1,40 +1,67 @@
 """Adapt APIPod's RunPod entrypoint to RunPod's streaming contract.
 
 RunPod only takes the streaming path when the *registered handler function*
-is a generator (``inspect.isgeneratorfunction``). APIPod's router naturally
-*returns* a generator object for streaming endpoints. Returning that object
-from a normal function makes RunPod ``json.dumps`` it and fail with:
+is a generator (``inspect.isgeneratorfunction`` or ``isasyncgenfunction``).
+APIPod's router naturally *returns* a generator object for streaming endpoints.
+Returning that object from a normal function makes RunPod ``json.dumps`` it
+and fail with:
 
     Object of type generator is not JSON serializable
 
-This module wraps the dispatch callable as a true generator handler:
-stream results are ``yield``-ed; non-stream results are yielded once.
+This module wraps the dispatch callable as a true **async** generator handler
+so ``MAX_CONCURRENCY`` > 1 can overlap jobs: awaits yield the event loop;
+sync generators are drained on a worker thread.
 With ``return_aggregate_stream=True``, a one-shot non-stream result becomes
 ``[payload]`` — clients unwrap that via ``_try_unwrap_apipod``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import inspect
-from typing import Any, Callable, Iterator
+from typing import Any, AsyncIterator, Callable, Iterator
 
-from apipod.engine.streaming.stream_serializer import as_sync_iter, is_streaming_result
+from apipod.engine.streaming.stream_serializer import is_streaming_result
 
 
-def as_runpod_generator_handler(dispatch: Callable[[Any], Any]) -> Callable[[Any], Iterator]:
-    """Wrap *dispatch* so RunPod detects a generator handler and streams yields."""
+async def _iterate_chunks(result: Any) -> AsyncIterator[Any]:
+    """Yield chunks from a sync/async generator without blocking the event loop."""
+    if inspect.isasyncgen(result):
+        async for chunk in result:
+            yield chunk
+        return
+    if inspect.isgenerator(result):
+        iterator: Iterator = result
 
-    def handler(job: Any) -> Iterator:
+        def _next():
+            try:
+                return True, next(iterator)
+            except StopIteration:
+                return False, None
+
+        while True:
+            has_item, chunk = await asyncio.to_thread(_next)
+            if not has_item:
+                return
+            yield chunk
+        return
+    yield result
+
+
+def as_runpod_async_handler(dispatch: Callable[[Any], Any]) -> Callable[[Any], AsyncIterator]:
+    """Wrap *dispatch* so RunPod sees an async generator and can overlap jobs."""
+
+    async def handler(job: Any) -> AsyncIterator:
         result = dispatch(job)
-        if is_streaming_result(result):
-            yield from as_sync_iter(result)
+        if inspect.isawaitable(result):
+            result = await result
+        if is_streaming_result(result) or inspect.isasyncgen(result) or inspect.isgenerator(result):
+            async for chunk in _iterate_chunks(result):
+                yield chunk
             return
-        # Non-stream: one yield so RunPod's generator path still works.
-        # Aggregate output is ``[result]``; parsers unwrap JobResult-shaped singles.
         yield result
 
     handler.__name__ = getattr(dispatch, "__name__", "handler")
     handler.__doc__ = getattr(dispatch, "__doc__", None)
-    # Bound methods report as generator functions; keep the same for free functions.
-    assert inspect.isgeneratorfunction(handler)
+    assert inspect.isasyncgenfunction(handler)
     return handler

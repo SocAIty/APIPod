@@ -152,24 +152,39 @@ def _chat_kwargs(request: ChatCompletionRequest, method) -> dict:
     return {name: value for name, value in kwargs.items() if name in supported}
 
 
+def _dispatch_chat(model: Model, request, extra: Optional[dict] = None):
+    """Call generate/stream, preferring async methods so RunPod jobs can overlap."""
+    extra = extra or {}
+    if request.stream:
+        if _class_method(model, "astream") is not None:
+            return model.astream(**extra, **_chat_kwargs(request, _class_method(model, "astream")))
+        return (
+            delta
+            for delta in model.stream(**extra, **_chat_kwargs(request, _class_method(model, "stream")))
+        )
+    if _class_method(model, "agenerate") is not None:
+        return model.agenerate(**extra, **_chat_kwargs(request, _class_method(model, "agenerate")))
+    return model.generate(**extra, **_chat_kwargs(request, _class_method(model, "generate")))
+
+
 def _llm_chat(model: Model):
-    def chat(request: ChatCompletionRequest):
+    async def chat(request: ChatCompletionRequest):
         """Chat completions: multi-turn conversations, instruction following and text generation.
 
         Send OpenAI-style messages; supports tools (function calling),
         logprobs, seed, stop sequences and reasoning output. Set stream=true
         for token-by-token server-sent events.
         """
-        if request.stream:
-            # Generator expression keeps the endpoint statically detectable as streaming.
-            return (delta for delta in model.stream(**_chat_kwargs(request, _class_method(model, "stream"))))
-        return model.generate(**_chat_kwargs(request, _class_method(model, "generate")))
+        result = _dispatch_chat(model, request)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     return chat
 
 
 def _vlm_chat(model: Model):
-    def chat(request: VLMChatRequest):
+    async def chat(request: VLMChatRequest):
         """Chat about images: describe scenes, answer visual questions, extract text.
 
         Send OpenAI-style messages plus optional images; the model sees them
@@ -178,12 +193,10 @@ def _vlm_chat(model: Model):
         all text from this receipt as markdown"), image description, document
         parsing and chart reading. Set stream=true for server-sent events.
         """
-        if request.stream:
-            return (
-                delta
-                for delta in model.stream(images=request.images, **_chat_kwargs(request, _class_method(model, "stream")))
-            )
-        return model.generate(images=request.images, **_chat_kwargs(request, _class_method(model, "generate")))
+        result = _dispatch_chat(model, request, extra={"images": request.images})
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     return chat
 
