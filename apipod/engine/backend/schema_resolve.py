@@ -50,6 +50,8 @@ from socaity_schemas import (
     ImageGenerationResponse,
     MultimodalEmbeddingRequest,
     MultimodalEmbeddingResponse,
+    SpaineChatCompletionRequest,
+    SpaineChatCompletionResponse,
     SpeechRequest,
     SpeechResponse,
     TranscriptionRequest,
@@ -78,9 +80,9 @@ class SchemaEndpointSpec:
 # automatically enables endpoint detection, body-parameter policies and
 # response wrapping everywhere.
 SCHEMA_REGISTRY: dict[Type, SchemaEndpointSpec] = {
-    # Agent chat first: subclass resolution walks the request __mro__, so agent
-    # requests (SpaineChatCompletionRequest, ...) bind the agent response with
-    # HIT fields while remaining "chat"-tagged for streaming.
+    # SPAINE before Agent: MRO walk must bind workflow fields on the SPAINE
+    # response, not the generic agent surface.
+    SpaineChatCompletionRequest: SchemaEndpointSpec(SpaineChatCompletionResponse, "chat"),
     AgentChatCompletionRequest: SchemaEndpointSpec(AgentChatCompletionResponse, "chat"),
     ChatCompletionRequest:      SchemaEndpointSpec(ChatCompletionResponse,      "chat"),
     CompletionRequest:          SchemaEndpointSpec(CompletionResponse,          "completion"),

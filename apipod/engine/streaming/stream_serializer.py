@@ -134,9 +134,17 @@ def aggregate_schema_tokens(items: list, binding: SchemaBinding) -> Any:
         events = [item for item in items if is_stream_event(item)]
         deltas = [item for item in items if not is_stream_event(item)]
         extra: dict = {}
+        workflow_deltas: list = []
         for event in events:
-            if event.get("object") == "agent.interrupt":
+            obj = event.get("object")
+            if obj == "agent.interrupt":
                 extra.update({k: v for k, v in event.items() if k != "object"})
+            elif obj == "workflow.delta":
+                workflow_deltas.append({k: v for k, v in event.items() if k != "object"})
+            elif obj == "workflow.snapshot":
+                extra["workflow"] = event.get("workflow")
+        if workflow_deltas:
+            extra["workflow_deltas"] = workflow_deltas
         if any(isinstance(item, dict) for item in deltas) or extra:
             if any(isinstance(item, dict) for item in deltas):
                 message = combine_deltas(deltas)
