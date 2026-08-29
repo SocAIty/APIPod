@@ -253,7 +253,7 @@ class JobQueue(JobQueueInterface[T]):
         if not job:
             return None
 
-        if job and self.job_store.is_completed(job.id):  # job.status in {JOB_STATUS.FINISHED, JOB_STATUS.FAILED, JOB_STATUS.TIMEOUT}:
+        if job and self.job_store.is_completed(job.id):
             self._remove_job(job)
         return job
 

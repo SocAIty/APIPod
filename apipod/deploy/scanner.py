@@ -15,6 +15,16 @@ from apipod.deploy.detectors import (
 )
 from apipod.deploy.detectors.entrypoint import resolve_entrypoint_title
 from apipod.deploy.profile import infer_profile, reconcile_framework_flags
+from apipod.deploy.resources import apply_resource_defaults, discover_hf_refs
+
+_PRESERVE_ON_RESCAN = (
+    "docker_context",
+    "compute_tier",
+    "disk_gb",
+    "gpu_vram_gb",
+    "min_gpu_vram_gb",
+)
+_RESOURCE_KEYS = ("compute_tier", "disk_gb", "gpu_vram_gb", "min_gpu_vram_gb")
 
 
 @dataclass
@@ -39,6 +49,9 @@ class DeploymentConfig:
     # by importing the entrypoint under APIPOD_SCAN=1 (declarations only).
     models: List[Dict[str, Any]] = field(default_factory=list)
     includes: List[Dict[str, str]] = field(default_factory=list)
+    compute_tier: Optional[str] = None
+    disk_gb: Optional[int] = None
+    gpu_vram_gb: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -146,11 +159,27 @@ class Scanner:
             includes=includes,
         )
 
+        config = deployment_config.to_dict()
+        existing = self.load_report() or {}
+        for key in _RESOURCE_KEYS:
+            if existing.get(key) not in (None, ""):
+                config[key] = existing[key]
+        config = apply_resource_defaults(config)
         print(f"Deployment profile: {profile}")
+        print(
+            f"Resources: compute_tier={config.get('compute_tier')}, "
+            f"disk_gb={config.get('disk_gb')}"
+            + (
+                f", gpu_vram_gb={config.get('gpu_vram_gb')}"
+                if config.get("gpu_vram_gb")
+                else ""
+            )
+        )
+        print("Edit disk_gb / gpu_vram_gb in apipod.json to override these defaults.")
         if python_deps:
             print(f"Python dependencies: {', '.join(sorted(python_deps))}")
         print("\n--- Scan Completed ---\n")
-        return deployment_config.to_dict()
+        return config
 
     def _collect_declarations(
         self, entrypoint: str
@@ -173,13 +202,13 @@ class Scanner:
         added_path = root not in sys.path
         if added_path:
             sys.path.insert(0, root)
+        module = None
         try:
             spec = importlib.util.spec_from_file_location("apipod_scan_entrypoint", entrypoint_path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
         except Exception as exc:
             print(f"Warning: could not import {entrypoint} to collect model declarations: {exc}")
-            return [], [], None
         finally:
             os.environ.pop("APIPOD_SCAN", None)
             if added_path:
@@ -189,31 +218,52 @@ class Scanner:
                     pass
 
         models: List[Dict[str, Any]] = []
-        owned_refs = set()
-        for model in declared_models():
-            entry: Dict[str, Any] = {"class": type(model).__name__}
-            handles = model.includes()
-            if not handles:
-                print(f"Warning: model {entry['class']} declares no include (weights unknown to the platform).")
-            for attr, handle in handles.items():
-                entry[attr] = handle.to_dict()
-                owned_refs.add((handle.kind, handle.ref))
-            models.append(entry)
+        includes: List[Dict[str, str]] = []
+        if module is not None:
+            owned_refs = set()
+            for model in declared_models():
+                entry: Dict[str, Any] = {"class": type(model).__name__}
+                handles = model.includes()
+                if not handles:
+                    print(
+                        f"Warning: model {entry['class']} declares no include "
+                        "(weights unknown to the platform)."
+                    )
+                for attr, handle in handles.items():
+                    entry[attr] = handle.to_dict()
+                    owned_refs.add((handle.kind, handle.ref))
+                models.append(entry)
+            includes = [
+                handle.to_dict()
+                for key, handle in declared_includes().items()
+                if key not in owned_refs
+            ]
 
-        includes = [
-            handle.to_dict()
-            for key, handle in declared_includes().items()
-            if key not in owned_refs
-        ]
+        if not models and not includes:
+            for ref in discover_hf_refs(self.root_path, entrypoint):
+                models.append({
+                    "class": "Transformers",
+                    "weights": {"kind": "hf", "ref": ref},
+                })
+                print(f"Detected Hugging Face model: {ref}")
+
         if models or includes:
             print(f"Declared models: {[m['class'] for m in models]}, standalone includes: {len(includes)}")
-        return models, includes, resolve_entrypoint_title(str(entrypoint_path), module)
+        resolved_title = (
+            resolve_entrypoint_title(str(entrypoint_path), module) if module is not None else None
+        )
+        return models, includes, resolved_title
 
     def save_report(self, config: Dict[str, Any]) -> None:
         try:
+            existing = self.load_report() or {}
+            merged = dict(config)
+            for key in _PRESERVE_ON_RESCAN:
+                if existing.get(key) and not merged.get(key):
+                    merged[key] = existing[key]
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
             with self.config_path.open("w", encoding="utf-8") as f:
-                json.dump(config, f, indent=4)
+                json.dump(merged, f, indent=4)
             print(f"Configuration saved to {self.config_path}")
             self._write_starter_files(config)
         except Exception as exc:

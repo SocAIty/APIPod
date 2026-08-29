@@ -57,6 +57,19 @@ class DeploymentManager:
 
     def save_config(self, config: Dict[str, Any]) -> None:
         self.scanner.save_report(config)
+        self.ensure_dockerfile(config)
+
+    def ensure_dockerfile(self, config: Optional[Dict[str, Any]] = None) -> None:
+        """Write a working Dockerfile on first scan; never clobber a custom one."""
+        if self.dockerfile_exists:
+            return
+        config = config if config is not None else (self.load_config() or {})
+        try:
+            image = self.recommend_image(config)
+            content = self.render_dockerfile(image, config)
+            self.write_dockerfile(content)
+        except Exception as exc:
+            print(f"Warning: could not write Dockerfile: {exc}")
 
     def load_config(self) -> Optional[Dict[str, Any]]:
         return self.scanner.load_report()

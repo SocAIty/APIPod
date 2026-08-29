@@ -7,6 +7,13 @@ from .IDetector import Detector
 
 _PRIORITY_FILES = ("main.py", "app.py", "api.py", "serve.py")
 _FACTORY_NAMES = frozenset({"APIPod", "serve"})
+_SERVE_INDICATORS = (
+    "serve(",
+    "TransformersLLM",
+    "TransformersVLM",
+    "VLLMChat",
+    "Chat(",
+)
 
 
 def _empty_result() -> Dict[str, Any]:
@@ -79,6 +86,19 @@ def _eval_simple(node: ast.AST, module: Any) -> Any:
         obj = getattr(module, node.value.id, None)
         return getattr(obj, node.attr, None) if obj is not None else None
     return None
+
+
+def _has_entrypoint_indicators(content: str) -> bool:
+    """Return True when file content looks like an apipod service entrypoint."""
+    if any(token in content for token in ("APIPod(", "serve(", "app.start()", "uvicorn.run")):
+        return True
+    if "from apipod import" in content or "import apipod" in content:
+        return any(token in content for token in _SERVE_INDICATORS)
+    return False
+
+
+def _has_serve_style(content: str) -> bool:
+    return "serve(" in content or any(token in content for token in _SERVE_INDICATORS[1:])
 
 
 def resolve_entrypoint_title(file_path: str, module: Any) -> Optional[str]:
@@ -165,7 +185,12 @@ class EntrypointDetector(Detector):
             for file in files:
                 if not file.endswith(".py"):
                     continue
+                if file.startswith("test_") or file == "conftest.py":
+                    continue
                 path = Path(dirpath) / file
+                rel = path.resolve().relative_to(root).as_posix()
+                if rel.startswith("scripts/"):
+                    continue
                 candidate = self._analyze_file(path, root)
                 if candidate is None or candidate["file"] in seen:
                     continue
@@ -190,7 +215,7 @@ class EntrypointDetector(Detector):
         except Exception:
             return None
 
-        if not any(token in content for token in ("APIPod(", "serve(", "app.start()", "uvicorn.run")):
+        if not _has_entrypoint_indicators(content):
             return None
 
         try:
@@ -216,6 +241,9 @@ class EntrypointDetector(Detector):
 
         if "app.start()" in content or "uvicorn.run" in content:
             result["kind"] = "start"
+            return result
+        if _has_serve_style(content):
+            result["kind"] = "serve"
             return result
         return None
 

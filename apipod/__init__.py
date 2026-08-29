@@ -1,11 +1,13 @@
 from apipod.api import APIPod
 from apipod.serve import serve
 from apipod.models import (
+    Chat,
     IncludeHandle,
     Model,
     Transformers,
     TransformersLLM,
     TransformersVLM,
+    VLLMChat,
     include,
     include_hf,
 )
@@ -31,10 +33,12 @@ except Exception:
 __all__ = [
     "APIPod",
     "serve",
+    "Chat",
     "Model",
     "Transformers",
     "TransformersLLM",
     "TransformersVLM",
+    "VLLMChat",
     "IncludeHandle",
     "include",
     "include_hf",
