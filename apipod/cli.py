@@ -304,7 +304,7 @@ def run_deploy(args):
     except Exception as exc:
         from socaity_cli.errors import PrivateSlotLimitError
 
-        if isinstance(exc, PrivateSlotLimitError):
+        if isinstance(exc, PrivateSlotLimitError) or getattr(exc, "code", None) == "AUTO_RECHARGE_REQUIRED":
             sys.exit(1)
         raise
     if result is None:
