@@ -204,14 +204,23 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
 
         return ret_job
 
-    def post_cancel_job(self, job_id: str) -> dict:
-        """Cancel a background job via the queue port."""
+    def post_cancel_job(self, job_id: str, action: str = "cancel") -> dict:
+        """Stop a background job via the queue port.
+
+        ``action=cancel`` (default) kills the job; ``action=interrupt`` stops it
+        gracefully - agent jobs keep a resumable checkpoint on their thread.
+        """
         job_id = job_id.strip().strip('"').strip("'").strip("?").strip("#")
+        if action not in ("cancel", "interrupt"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid action '{action}'. Choose: cancel, interrupt.",
+            )
         if self.job_queue is None:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Job queue not configured.")
 
         try:
-            summary = self.job_queue.cancel_job(job_id)
+            summary = self.job_queue.cancel_job(job_id, action=action)
         except NotImplementedError:
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,

@@ -53,7 +53,7 @@ For a small real-service smoke test (Harbor push/promote without an ~11 GB
 model image), use the monorepo fixture at `simple_test_service/`:
 
 ```bash
-apipod -C simple_test_service deploy serverless-runpod --yes
+apipod --project-dir simple_test_service deploy serverless-runpod --yes
 ```
 
 ## Failure protocol

@@ -211,10 +211,11 @@ app = APIPod(simulate="serverless-runpod", direct=True)   # RunPod native worker
 ### Build a container
 
 ```bash
+apipod scan
 apipod build
 ```
 
-This scans your project, picks a compatible base image (CUDA/cuDNN, ffmpeg included) and generates a `Dockerfile`. For most users this is all you need; advanced users can edit or write their own Dockerfile.
+`apipod scan` finds `APIPod()` and `serve()` entrypoints and writes `apipod-deploy/apipod.json`. If several service files match, you pick one. `apipod build` then picks a compatible base image (CUDA/cuDNN, ffmpeg included) and generates a `Dockerfile`. For most users this is all you need; advanced users can edit or write their own Dockerfile.
 
 Requirements: Docker installed, plus a CUDA/cuDNN setup if your model needs the GPU.
 

@@ -22,7 +22,7 @@ import httpx
 from media_toolkit import ImageFile
 
 from apipod.common.chat_parsing import ChatOutputParser, parse_chat_output
-from apipod.models.includes import IncludeHandle, include_hf
+from apipod.models.includes import IncludeHandle, include_hf, _runpod_hf_snapshot
 from apipod.models.model import Model
 from apipod.models.vllm import config as vllm_config
 
@@ -125,6 +125,89 @@ def _extend_without_duplicates(argv: List[str], extra: str) -> None:
         index += 1
 
 
+def _read_hf_config(weights: IncludeHandle) -> Optional[dict]:
+    """Load ``config.json`` for *weights* without importing the full model."""
+    from pathlib import Path
+
+    candidates = []
+    resolved = getattr(weights, "_resolved", None)
+    if resolved is not None:
+        candidates.append(Path(resolved) / "config.json")
+    if weights.kind == "hf":
+        cached = _runpod_hf_snapshot(weights.ref)
+        if cached is not None:
+            candidates.append(cached / "config.json")
+    elif weights.kind == "path":
+        candidates.append(Path(weights.ref) / "config.json")
+    for path in candidates:
+        if path.is_file():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+    if weights.kind != "hf":
+        return None
+    try:
+        from huggingface_hub import hf_hub_download
+        path = hf_hub_download(weights.ref, "config.json")
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _int_field(config: dict, *keys: str) -> Optional[int]:
+    for key in keys:
+        value = config.get(key)
+        if value is None:
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
+def _context_from_mapping(config: dict) -> Optional[int]:
+    """Read one config object (root or ``text_config``). Prefer the largest signal."""
+    lengths: list[int] = []
+    direct = _int_field(
+        config,
+        "max_model_len",
+        "max_position_embeddings",
+        "max_sequence_length",
+        "model_max_length",
+    )
+    if direct:
+        lengths.append(direct)
+    rope = config.get("rope_scaling") if isinstance(config.get("rope_scaling"), dict) else {}
+    original = rope.get("original_max_position_embeddings")
+    factor = rope.get("factor") or rope.get("rope_factor")
+    if original is not None and factor is not None:
+        try:
+            scaled = int(int(original) * float(factor))
+        except (TypeError, ValueError):
+            scaled = 0
+        if scaled > 0:
+            lengths.append(scaled)
+    return max(lengths) if lengths else None
+
+
+def max_model_len_from_config(weights: IncludeHandle) -> Optional[int]:
+    """Context window from the checkpoint, including nested VLM text configs."""
+    config = _read_hf_config(weights)
+    if not config:
+        return None
+    lengths = []
+    for mapping in (config, config.get("text_config"), config.get("llm_config")):
+        if isinstance(mapping, dict):
+            value = _context_from_mapping(mapping)
+            if value:
+                lengths.append(value)
+    return max(lengths) if lengths else None
+
+
 def _speculative_argv(raw: str) -> List[str]:
     speculative_config = raw.strip()
     if not speculative_config:
@@ -181,7 +264,8 @@ class VLLMChat(Model):
             )
         host = vllm_config.HOST
         port = vllm_config.PORT
-        max_len = vllm_config.MAX_MODEL_LEN
+        detected = max_model_len_from_config(self.weights)
+        max_len = str(detected) if detected else (vllm_config.MAX_MODEL_LEN or "")
         max_num_seqs = vllm_config.MAX_NUM_SEQS or "256"
         extra = vllm_config.EXTRA_ARGS.strip()
         timeout = vllm_config.STARTUP_TIMEOUT
@@ -208,7 +292,8 @@ class VLLMChat(Model):
         command = shlex.join(argv)
         print(
             f"[apipod] Starting vLLM model={self.weights.ref} "
-            f"endpoint=http://{host}:{port} mode={mode} max_num_seqs={max_num_seqs}",
+            f"endpoint=http://{host}:{port} mode={mode} "
+            f"max_model_len={max_len or 'vllm-default'} max_num_seqs={max_num_seqs}",
             flush=True,
         )
         print(f"[apipod] vLLM command: {command}", flush=True)

@@ -43,6 +43,17 @@ def project(tmp_path, monkeypatch):
     return tmp_path
 
 
+def test_project_dir_aliases_are_silent():
+    parser, _ = cli._build_parser()
+    help_text = parser.format_help()
+    assert "--project-dir" in help_text
+    assert "--cwd" not in help_text
+    assert " -C " not in help_text
+    assert parser.parse_args(["--project-dir", "svc", "scan"]).project_dir == "svc"
+    assert parser.parse_args(["-C", "svc", "scan"]).project_dir == "svc"
+    assert parser.parse_args(["--cwd", "svc", "scan"]).project_dir == "svc"
+
+
 def test_scan_generates_config(project):
     cli.run_scan()
 
@@ -53,6 +64,55 @@ def test_scan_generates_config(project):
     data = json.loads(config.read_text())
     assert data["entrypoint"] == "main.py"
     assert data["title"] == "cli-test-service"
+
+
+SERVE_FILE = """\
+from apipod import Model, serve
+
+
+class DummyLLM(Model):
+    def load(self):
+        pass
+
+    def generate(self, messages, temperature=0.7, max_tokens=16):
+        return "ok"
+
+
+model = DummyLLM()
+
+if __name__ == "__main__":
+    serve(model, title="served-cli-service")
+"""
+
+
+def test_scan_detects_serve_entrypoint(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "svc"\nversion = "0.0.0"\n')
+    (tmp_path / "qwen.py").write_text(SERVE_FILE)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+
+    cli.run_scan()
+
+    import json
+    data = json.loads((tmp_path / "apipod-deploy" / "apipod.json").read_text())
+    assert data["entrypoint"] == "qwen.py"
+    assert data["title"] == "served-cli-service"
+
+
+def test_scan_selects_among_multiple_entrypoints(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "svc"\nversion = "0.0.0"\n')
+    (tmp_path / "alpha.py").write_text(SERVE_FILE.replace("served-cli-service", "alpha-svc"))
+    (tmp_path / "beta.py").write_text(SERVE_FILE.replace("served-cli-service", "beta-svc"))
+    monkeypatch.chdir(tmp_path)
+    answers = iter(["2"])
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+
+    cli.run_scan()
+
+    import json
+    data = json.loads((tmp_path / "apipod-deploy" / "apipod.json").read_text())
+    assert data["entrypoint"] == "beta.py"
+    assert data["title"] == "beta-svc"
 
 
 def test_build_generates_dockerfile(project, monkeypatch):

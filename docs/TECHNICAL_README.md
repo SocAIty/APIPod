@@ -73,11 +73,13 @@ encoder-free unified models like Gemma 4.
 ### vLLM engine (`apipod/models/vllm`)
 
 ``VLLMChat`` is the vLLM engine behind ``Chat``, not a second public preset.
-It does not import vLLM. ``load()`` spawns ``vllm serve`` using options from
-``apipod.models.vllm.config`` (``APIPOD_VLLM_*``), polls ``/health``, and
-``generate``/``agenerate`` POST to ``/v1/chat/completions``. Those env vars are
-engine argv, not APIPod process settings; they do not live in
-``common/settings.py``. Native OpenAI ``message.tool_calls`` are used as-is
+It does not import vLLM. ``load()`` reads the checkpoint ``config.json``
+(``max_position_embeddings`` and rope scaling) and passes ``--max-model-len``.
+``APIPOD_VLLM_MAX_MODEL_LEN`` is a fallback when that file is missing. Other
+``APIPOD_VLLM_*`` options come from ``apipod.models.vllm.config``. ``load()``
+polls ``/health``, and ``generate``/``agenerate`` POST to
+``/v1/chat/completions``. Those env vars are engine argv, not APIPod process
+settings; they do not live in ``common/settings.py``. Native OpenAI ``message.tool_calls`` are used as-is
 when the server emits them (enable auto tool-choice plus a tool-call parser).
 Images are encoded with cv2 from BGR numpy, never Pillow. The RunPod worker
 honors ``MAX_CONCURRENCY`` via ``concurrency_modifier`` so several queue jobs
@@ -98,7 +100,9 @@ from ``type(model)`` (never the instance) so the lazy-load ``__getattr__`` of
 ``Model`` is not triggered. Custom ``Model`` subclasses opt in by naming their
 methods accordingly; service files keep ``serve()`` under
 ``if __name__ == "__main__":`` so ``apipod scan`` can import them without
-starting a server.
+starting a server. ``apipod scan`` treats ``serve()`` the same as
+``APIPod()`` when locating the entrypoint. Several matching files produce
+an interactive select.
 
 ## Core principles
 
@@ -155,6 +159,8 @@ File support is split into a *signature* layer and a *runtime* layer.
 
 - **Signature rewriting** (`engine/backend/fastapi/file_handling_mixin.py`): media-toolkit annotations in the user's signature are rewritten so FastAPI/OpenAPI understand them. `image: ImageFile` becomes `Union[LimitedUploadFile, ImageFileModel, str]` — the client may send a multipart upload, a `FileModel` JSON object (`{file_name, content_type, content}` where content is base64 or a URL), or a plain URL/base64 string. `MediaList[...]` maps to list variants. Upload size limits are enforced via a dynamically subclassed `LimitedUploadFile`. `JobProgress` parameters are stripped from the public signature (and a dummy is injected when no queue runs).
 - **Runtime conversion** (`engine/files/base_file_mixin.py`): before the user function executes, every media-annotated argument is converted to the annotated media-toolkit type via `media_from_any` — whatever the client actually sent. The function body always receives real `MediaFile` objects. This layer is backend-agnostic and reused by the RunPod router.
+
+Multipart uploads are wrapped lazily: the `MediaFile` borrows the Starlette upload spool (no copy) and content-type detection runs on a 1 KB magic peek at wrap time. Handlers can stream the spool onward (`stream_to`, `fileobj`, `to_httpx_send_able_tuple`). Because the spool is request-scoped, `_QueueMixin` materializes every `MediaFile`/`MediaList` in the job params before enqueueing, so queued workers always receive owned bytes.
 
 On the way out, `JobResultFactory._serialize_result` converts returned `MediaFile`/`MediaList`/pydantic objects back into JSON-safe `FileModel` payloads.
 

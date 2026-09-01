@@ -13,6 +13,7 @@ from apipod.deploy.detectors import (
     EntrypointDetector,
     FrameworkDetector,
 )
+from apipod.deploy.detectors.entrypoint import resolve_entrypoint_title
 from apipod.deploy.profile import infer_profile, reconcile_framework_flags
 from apipod.deploy.resources import apply_resource_defaults, discover_hf_refs
 
@@ -134,11 +135,12 @@ class Scanner:
             )
 
         entrypoint = entrypoint_info.get("file") or target_file or "main.py"
-        models, includes = self._collect_declarations(entrypoint)
+        models, includes, resolved_title = self._collect_declarations(entrypoint)
+        title = resolved_title or entrypoint_info.get("title", "apipod-service")
 
         deployment_config = DeploymentConfig(
             entrypoint=entrypoint,
-            title=entrypoint_info.get("title", "apipod-service"),
+            title=title,
             profile=profile,
             python_version=framework_info.get("python_version", "3.10"),
             orchestrator=entrypoint_info.get("orchestrator", "local"),
@@ -179,7 +181,9 @@ class Scanner:
         print("\n--- Scan Completed ---\n")
         return config
 
-    def _collect_declarations(self, entrypoint: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
+    def _collect_declarations(
+        self, entrypoint: str
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]], Optional[str]]:
         """Import the entrypoint under APIPOD_SCAN=1 and collect declared
         ``apipod.Model`` instances and standalone include handles.
 
@@ -190,40 +194,50 @@ class Scanner:
         from apipod.models import declared_includes, declared_models
 
         entrypoint_path = (self.root_path / entrypoint).resolve()
+        if not entrypoint_path.exists():
+            return [], [], None
+
+        os.environ["APIPOD_SCAN"] = "1"
+        root = str(self.root_path)
+        added_path = root not in sys.path
+        if added_path:
+            sys.path.insert(0, root)
+        module = None
+        try:
+            spec = importlib.util.spec_from_file_location("apipod_scan_entrypoint", entrypoint_path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        except Exception as exc:
+            print(f"Warning: could not import {entrypoint} to collect model declarations: {exc}")
+        finally:
+            os.environ.pop("APIPOD_SCAN", None)
+            if added_path:
+                try:
+                    sys.path.remove(root)
+                except ValueError:
+                    pass
+
         models: List[Dict[str, Any]] = []
         includes: List[Dict[str, str]] = []
-        if entrypoint_path.exists():
-            root = str(self.root_path)
-            if root not in sys.path:
-                sys.path.insert(0, root)
-            os.environ["APIPOD_SCAN"] = "1"
-            try:
-                spec = importlib.util.spec_from_file_location("apipod_scan_entrypoint", entrypoint_path)
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-            except Exception as exc:
-                print(f"Warning: could not import {entrypoint} to collect model declarations: {exc}")
-            else:
-                owned_refs = set()
-                for model in declared_models():
-                    entry: Dict[str, Any] = {"class": type(model).__name__}
-                    handles = model.includes()
-                    if not handles:
-                        print(
-                            f"Warning: model {entry['class']} declares no include "
-                            "(weights unknown to the platform)."
-                        )
-                    for attr, handle in handles.items():
-                        entry[attr] = handle.to_dict()
-                        owned_refs.add((handle.kind, handle.ref))
-                    models.append(entry)
-                includes = [
-                    handle.to_dict()
-                    for key, handle in declared_includes().items()
-                    if key not in owned_refs
-                ]
-            finally:
-                os.environ.pop("APIPOD_SCAN", None)
+        if module is not None:
+            owned_refs = set()
+            for model in declared_models():
+                entry: Dict[str, Any] = {"class": type(model).__name__}
+                handles = model.includes()
+                if not handles:
+                    print(
+                        f"Warning: model {entry['class']} declares no include "
+                        "(weights unknown to the platform)."
+                    )
+                for attr, handle in handles.items():
+                    entry[attr] = handle.to_dict()
+                    owned_refs.add((handle.kind, handle.ref))
+                models.append(entry)
+            includes = [
+                handle.to_dict()
+                for key, handle in declared_includes().items()
+                if key not in owned_refs
+            ]
 
         if not models and not includes:
             for ref in discover_hf_refs(self.root_path, entrypoint):
@@ -235,7 +249,10 @@ class Scanner:
 
         if models or includes:
             print(f"Declared models: {[m['class'] for m in models]}, standalone includes: {len(includes)}")
-        return models, includes
+        resolved_title = (
+            resolve_entrypoint_title(str(entrypoint_path), module) if module is not None else None
+        )
+        return models, includes, resolved_title
 
     def save_report(self, config: Dict[str, Any]) -> None:
         try:

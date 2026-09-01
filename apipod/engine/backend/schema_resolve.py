@@ -20,6 +20,7 @@ schemas themselves.
 """
 
 import inspect
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,6 +32,8 @@ from pydantic.json_schema import SkipJsonSchema
 from media_toolkit import MediaFile
 
 from socaity_schemas import (
+    AgentChatCompletionRequest,
+    AgentChatCompletionResponse,
     ChatCompletionChunk,
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -47,6 +50,8 @@ from socaity_schemas import (
     ImageGenerationResponse,
     MultimodalEmbeddingRequest,
     MultimodalEmbeddingResponse,
+    SpaineChatCompletionRequest,
+    SpaineChatCompletionResponse,
     SpeechRequest,
     SpeechResponse,
     TranscriptionRequest,
@@ -75,6 +80,10 @@ class SchemaEndpointSpec:
 # automatically enables endpoint detection, body-parameter policies and
 # response wrapping everywhere.
 SCHEMA_REGISTRY: dict[Type, SchemaEndpointSpec] = {
+    # SPAINE before Agent: MRO walk must bind workflow fields on the SPAINE
+    # response, not the generic agent surface.
+    SpaineChatCompletionRequest: SchemaEndpointSpec(SpaineChatCompletionResponse, "chat"),
+    AgentChatCompletionRequest: SchemaEndpointSpec(AgentChatCompletionResponse, "chat"),
     ChatCompletionRequest:      SchemaEndpointSpec(ChatCompletionResponse,      "chat"),
     CompletionRequest:          SchemaEndpointSpec(CompletionResponse,          "completion"),
     EmbeddingRequest:           SchemaEndpointSpec(EmbeddingResponse,           "embedding"),
@@ -320,10 +329,10 @@ def _normalize_response_model(result: Any, response_model: Type) -> dict:
     """
     # None → empty text or dict; dict gaps are filled from schema defaults below.
     if result is None:
-        result = "" if response_model in (ChatCompletionResponse, CompletionResponse, TranscriptionResponse) else {}
+        result = "" if issubclass(response_model, (ChatCompletionResponse, CompletionResponse, TranscriptionResponse)) else {}
 
     # Shorthand raw returns authors may use instead of a full response dict.
-    if response_model is ChatCompletionResponse and isinstance(result, str):
+    if issubclass(response_model, ChatCompletionResponse) and isinstance(result, str):
         # Raw model text may carry reasoning / tool-call tags; parse into a typed message.
         message = parse_chat_output(result)
         finish_reason = "tool_calls" if message.get("tool_calls") else "stop"
@@ -385,6 +394,15 @@ def iter_media_chunks(media_file: MediaFile, chunk_size: int = 64 * 1024) -> Ite
 SSE_DONE = "data: [DONE]\n\n"
 
 
+def is_stream_event(raw: Any) -> bool:
+    """True for structured passthrough events yielded by schema endpoints.
+
+    Events carry their own ``object`` discriminator (e.g. ``agent.interrupt``)
+    and are forwarded as standalone SSE events, not wrapped into chunk deltas.
+    """
+    return isinstance(raw, dict) and bool(raw.get("object"))
+
+
 def _to_sse(chunk: BaseModel) -> str:
     """Serialize a chunk model into a single server-sent-event data line."""
     return f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
@@ -442,6 +460,12 @@ class SchemaStreamSerializer:
 
     def delta(self, raw: Any) -> str:
         """Serialize one raw delta (content str or ChatDelta-shaped dict) into a chunk SSE event."""
+        if is_stream_event(raw):
+            # Structured agent event (agent.interrupt, later workflow deltas):
+            # passthrough as its own SSE event instead of a ChatDelta chunk.
+            if raw.get("object") == "agent.interrupt":
+                self._finish_reason = "interrupt"
+            return f"data: {json.dumps(raw)}\n\n"
         if isinstance(raw, dict) and raw.get("tool_calls"):
             self._finish_reason = "tool_calls"
         return _to_sse(self._build(self._chunk_id, self._created, raw, None))

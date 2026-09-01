@@ -12,6 +12,8 @@ def _get(name: str, default: str = "") -> str:
 
 HOST = _get("HOST", "127.0.0.1")
 PORT = int(_get("PORT", "18000"))
+# Fallback only when config.json cannot be read. Chat.load() prefers the
+# checkpoint's max_position_embeddings (and rope scaling).
 MAX_MODEL_LEN = _get("MAX_MODEL_LEN", "")
 # worker-vllm default. vLLM's own default (1024) exceeds Qwen3.8 Mamba cache.
 MAX_NUM_SEQS = _get("MAX_NUM_SEQS", "256")

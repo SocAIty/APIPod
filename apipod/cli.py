@@ -10,9 +10,27 @@ from socaity_cli.prompts import input_yes_no
 
 
 def _deployment_manager(args=None) -> DeploymentManager:
-    """Build a DeploymentManager, honoring ``-C`` / ``--project-dir`` when set."""
+    """Build a DeploymentManager, honoring ``--project-dir`` when set."""
     start_path = getattr(args, "project_dir", None) if args is not None else None
     return DeploymentManager(start_path=start_path)
+
+
+def _add_project_dir_option(parser: argparse.ArgumentParser) -> None:
+    """Document ``--project-dir``. ``-C`` and ``--cwd`` are silent aliases."""
+    parser.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=None,
+        metavar="DIR",
+        help="Service project directory (must contain apipod-deploy/ or pyproject.toml).",
+    )
+    parser.add_argument(
+        "-C",
+        "--cwd",
+        dest="project_dir",
+        metavar="DIR",
+        help=argparse.SUPPRESS,
+    )
 
 
 def select_base_image(manager: DeploymentManager, config_data: dict) -> str:
@@ -339,16 +357,10 @@ Examples:
   apipod build path/to/service.py                Build from a specific Python file
   apipod analyze                                 Pre-deploy analysis via Socaity (no draft created)
   apipod deploy                                  Analyze + create a Socaity deployment draft
-  apipod -C simple_test_service deploy           Deploy a service from a monorepo subdirectory
+  apipod --project-dir simple_test_service deploy  Deploy a service from a monorepo subdirectory
         """,
     )
-    parser.add_argument(
-        "-C",
-        "--project-dir",
-        default=None,
-        metavar="DIR",
-        help="Service project directory (must contain apipod-deploy/ or pyproject.toml).",
-    )
+    _add_project_dir_option(parser)
     subparsers = parser.add_subparsers(dest="command", metavar="command")
     parsers: dict = {"__root__": parser}
 
@@ -433,7 +445,7 @@ Examples:
             "Examples:\n"
             "  apipod deploy\n"
             "  apipod deploy serverless-runpod\n"
-            "  apipod -C simple_test_service deploy serverless-runpod --yes\n"
+            "  apipod --project-dir simple_test_service deploy serverless-runpod --yes\n"
             "  apipod deploy --skip-build              Use the already-built local image\n"
             "  apipod deploy --resume DEPLOYMENT_ID    Retry the push for an existing draft"
         ),
