@@ -21,8 +21,18 @@ _FILES_DIR = Path(__file__).resolve().parent.parent / "files"
 
 
 def tag_path(request_model: Type) -> str:
-    """Public route path for a schema (APIPod normalizes ``_`` to ``-``)."""
-    return "/" + SCHEMA_REGISTRY[request_model].tag.replace("_", "-")
+    """Public route path for a schema (APIPod normalizes ``_`` to ``-``).
+
+    Several request models share the semantic tag ``chat``. Keep the last
+    registry entry (OpenAI ``ChatCompletionRequest``) on ``/chat`` and give
+    Agent/SPAINE unique paths so OpenAPI does not collapse them.
+    """
+    spec = SCHEMA_REGISTRY[request_model]
+    base = "/" + spec.tag.replace("_", "-")
+    same_tag = [model for model, other in SCHEMA_REGISTRY.items() if other.tag == spec.tag]
+    if len(same_tag) > 1 and request_model is not same_tag[-1]:
+        return f"{base}-{request_model.__name__.lower()}"
+    return base
 
 
 def _load_test_media(file_name: str, media_type: Type):
@@ -58,7 +68,9 @@ def _schema_endpoint(
 
 def register_all(app):
     for request_model, spec in SCHEMA_REGISTRY.items():
-        app.endpoint(tag_path(request_model))(_schema_endpoint(request_model, {}, f"ep_{spec.tag}"))
+        app.endpoint(tag_path(request_model))(
+            _schema_endpoint(request_model, {}, f"ep_{request_model.__name__}")
+        )
 
 
 class ChatRequestPlus(schemas.ChatCompletionRequest):

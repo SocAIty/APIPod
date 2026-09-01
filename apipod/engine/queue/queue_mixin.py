@@ -7,6 +7,15 @@ from apipod.common.constants import SERVER_HEALTH
 from apipod.engine.jobs.job_result import JobResult
 
 
+def _own_media_file(value: MediaFile) -> None:
+    """Force *value* to own its bytes after the request spool closes."""
+    materialize = getattr(value, "materialize", None)
+    if callable(materialize):
+        materialize()
+        return
+    value.from_bytes(value.to_bytes())
+
+
 def _materialize_media_params(job_params: dict) -> None:
     """Copy lazy media views into owned buffers before enqueueing.
 
@@ -16,11 +25,11 @@ def _materialize_media_params(job_params: dict) -> None:
     """
     for value in job_params.values():
         if isinstance(value, MediaFile):
-            value.materialize()
+            _own_media_file(value)
         elif isinstance(value, MediaList):
             for item in value:
                 if isinstance(item, MediaFile):
-                    item.materialize()
+                    _own_media_file(item)
 
 
 class _QueueMixin:
