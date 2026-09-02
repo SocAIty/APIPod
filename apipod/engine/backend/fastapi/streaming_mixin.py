@@ -32,6 +32,7 @@ from fastapi.responses import StreamingResponse
 
 from apipod.engine.endpoint_config import EndpointExecutionPlan
 from apipod.engine.jobs.base_job import JOB_STATUS, STREAM_WAIT_STATUSES
+from apipod.engine.profiling import event as profile_event
 from apipod.engine.streaming.stream_producer import StreamProducer
 
 
@@ -48,16 +49,30 @@ class _FastAPIStreamingMixin:
 
     async def _stream_generator(self, result):
         """Adapt a sync or async generator into an async generator for StreamingResponse."""
+        first = True
+
+        def _emit_first(chunk) -> None:
+            nonlocal first
+            if not first:
+                return
+            first = False
+            nbytes = len(chunk) if isinstance(chunk, (str, bytes, bytearray)) else None
+            profile_event("engine", "first_token", ttft=True, bytes=nbytes)
+
         if inspect.isasyncgen(result):
             async for chunk in result:
-                yield chunk if isinstance(chunk, (str, bytes)) else str(chunk)
+                out = chunk if isinstance(chunk, (str, bytes)) else str(chunk)
+                _emit_first(out)
+                yield out
         elif inspect.isgenerator(result):
             loop = asyncio.get_event_loop()
             while True:
                 chunk = await loop.run_in_executor(None, next, result, _STREAM_END)
                 if chunk is _STREAM_END:
                     break
-                yield chunk if isinstance(chunk, (str, bytes)) else str(chunk)
+                out = chunk if isinstance(chunk, (str, bytes)) else str(chunk)
+                _emit_first(out)
+                yield out
         else:
             raise TypeError(f"Expected generator, got {type(result)}")
 
@@ -149,10 +164,17 @@ class _FastAPIStreamingMixin:
             )
 
         async def _event_generator():
+            first = True
+            profile_event("engine", "stream_read_start", job_id)
             try:
                 async for chunk in self.stream_store.read_chunks(job_id):
                     if await request.is_disconnected():
                         break
+                    text = chunk.decode("utf-8", errors="ignore") if isinstance(chunk, (bytes, bytearray)) else str(chunk)
+                    stripped = text.strip()
+                    if first and stripped and not stripped.startswith(":"):
+                        first = False
+                        profile_event("engine", "first_sse_chunk", job_id, ttft=True, bytes=len(text))
                     yield chunk
             except Exception:
                 self._logger.exception("Error during stream delivery | job_id=%s", job_id)

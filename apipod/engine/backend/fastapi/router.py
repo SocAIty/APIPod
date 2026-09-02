@@ -240,6 +240,23 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         normalized = path.rstrip("/").lower()
         return normalized == "/chat" or normalized.endswith("/chat")
 
+    @staticmethod
+    def _payload_wants_stream(job_params: dict | None) -> bool:
+        """True when the submitted body asked for streaming (``stream: true``)."""
+        if not job_params:
+            return False
+        if job_params.get("stream") is True:
+            return True
+        request = job_params.get("request")
+        if isinstance(request, dict) and request.get("stream") is True:
+            return True
+        if getattr(request, "stream", None) is True:
+            return True
+        input_data = job_params.get("input_data")
+        if isinstance(input_data, dict) and input_data.get("stream") is True:
+            return True
+        return False
+
     def add_job(self, func: Callable, job_params: dict) -> JobResult:
         """Enqueue a task and return a :class:`JobResult` with endpoint-aware links."""
         if self.job_queue is None:
@@ -248,8 +265,9 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         plan_key = self._plan_key(func)
         plan = self._endpoint_plans.get(plan_key)
         stream_store_configured = self.stream_store is not None
-        supports_streaming = (
-            stream_store_configured and plan is not None and plan.is_streaming
+        supports_streaming = stream_store_configured and (
+            (plan is not None and plan.is_streaming)
+            or self._payload_wants_stream(job_params)
         )
         plan_path = getattr(plan, "path", None) if plan is not None else None
         plan_streaming = bool(getattr(plan, "is_streaming", False)) if plan is not None else False

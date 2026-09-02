@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import time
 from typing import Dict, Optional, TypeVar, Tuple
 
+from apipod.engine.profiling import event as profile_event, start as profile_start
 from apipod.engine.queue.job_store import JobStore
 from apipod.engine.jobs.base_job import BaseJob, LocalJob, JOB_STATUS
 from apipod.engine.signatures.analysis import job_progress_param_names
@@ -104,6 +105,8 @@ class JobQueue(JobQueueInterface[T]):
 
     def _process_job(self, job: T) -> None:
         try:
+            profile_start(job.id)
+            profile_event("engine", "job_started", job.id)
             job.metrics.started_at = datetime.now(timezone.utc)
             job.status = JOB_STATUS.PROCESSING
 
@@ -147,13 +150,19 @@ class JobQueue(JobQueueInterface[T]):
 
         job.status = JOB_STATUS.STREAMING
         store.open_stream(job.id)
+        profile_event("engine", "stream_opened", job.id)
         try:
+            first = True
             for item in producer.raw_chunks:
                 collected.append(item)
                 store.write_chunk(job.id, producer.to_chunk(item))
+                if first:
+                    first = False
+                    profile_event("engine", "first_store_chunk", job.id, ttft=True)
             for closing_chunk in producer.closing:
                 store.write_chunk(job.id, closing_chunk)
             store.close_stream(job.id)
+            profile_event("engine", "stream_done", job.id)
         except Exception as e:
             store.close_stream(job.id, error=str(e))
             raise
