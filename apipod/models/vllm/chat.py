@@ -22,7 +22,6 @@ import httpx
 from media_toolkit import ImageFile
 
 from apipod.common.chat_parsing import ChatOutputParser, parse_chat_output
-from apipod.engine.profiling import event as profile_event
 from apipod.models.includes import IncludeHandle, include_hf, _runpod_hf_snapshot
 from apipod.models.model import Model
 from apipod.models.vllm import config as vllm_config
@@ -612,28 +611,11 @@ class VLLMChat(Model):
             tools, tool_choice, stream=True,
         )
         state = _SseParseState()
-        t_vllm = time.monotonic()
         with httpx.Client(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
             with client.stream("POST", self._completion_url(), json=body) as response:
                 self._raise_for_status(response)
-                profile_event(
-                    "engine",
-                    "provider_headers",
-                    vllm_ms=int((time.monotonic() - t_vllm) * 1000),
-                    status=response.status_code,
-                )
-                first = True
                 for line in response.iter_lines():
-                    for delta in _parse_sse_delta(line, state):
-                        if first:
-                            first = False
-                            profile_event(
-                                "engine",
-                                "first_token",
-                                ttft=True,
-                                vllm_ms=int((time.monotonic() - t_vllm) * 1000),
-                            )
-                        yield delta
+                    yield from _parse_sse_delta(line, state)
         yield from state.parser.flush()
 
     async def astream(
@@ -654,27 +636,11 @@ class VLLMChat(Model):
             tools, tool_choice, stream=True,
         )
         state = _SseParseState()
-        t_vllm = time.monotonic()
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
             async with client.stream("POST", self._completion_url(), json=body) as response:
                 self._raise_for_status(response)
-                profile_event(
-                    "engine",
-                    "provider_headers",
-                    vllm_ms=int((time.monotonic() - t_vllm) * 1000),
-                    status=response.status_code,
-                )
-                first = True
                 async for line in response.aiter_lines():
                     for delta in _parse_sse_delta(line, state):
-                        if first:
-                            first = False
-                            profile_event(
-                                "engine",
-                                "first_token",
-                                ttft=True,
-                                vllm_ms=int((time.monotonic() - t_vllm) * 1000),
-                            )
                         yield delta
         for delta in state.parser.flush():
             yield delta

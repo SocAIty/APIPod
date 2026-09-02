@@ -8,7 +8,6 @@ from pydantic import BaseModel
 
 from apipod.engine.jobs.base_job import JOB_STATUS, BaseJob
 from apipod.engine.jobs.job_progress import JobProgress, JobProgressRunpod
-from apipod.engine.profiling import load_hops, ttft_seconds
 from apipod.engine.signatures.upload import is_param_media_toolkit_file
 from media_toolkit import IMediaContainer
 from media_toolkit.utils.data_type_utils import is_file_model_dict
@@ -39,8 +38,6 @@ class JobMetrics(BaseModel):
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     execution_time_s: Optional[float] = None
-    ttft_s: Optional[float] = None
-    hops: Optional[List[dict]] = None
 
 
 class JobResult(BaseModel):
@@ -141,15 +138,12 @@ class JobResultFactory:
     ) -> JobResult:
         """Map a :class:`BaseJob` to the public :class:`JobResult`."""
         m = job.metrics
-        hops = load_hops(job.id)
         metrics = JobMetrics(
             created_at=m.created_at,
             queued_at=m.queued_at,
             started_at=m.started_at,
             finished_at=m.finished_at,
             execution_time_s=m.execution_time_s,
-            ttft_s=ttft_seconds(hops, t0=m.created_at),
-            hops=hops or None,
         )
 
         return JobResult(
