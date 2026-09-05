@@ -136,6 +136,7 @@ def _chat_kwargs(request: ChatCompletionRequest, method) -> dict:
         "seed": request.seed,
         "tools": request.tools,
         "tool_choice": request.tool_choice,
+        "parallel_tool_calls": request.parallel_tool_calls,
         "logprobs": request.logprobs,
         "top_logprobs": request.top_logprobs,
     }

@@ -81,6 +81,7 @@ polls ``/health``, and ``generate``/``agenerate`` POST to
 ``/v1/chat/completions``. Those env vars are engine argv, not APIPod process
 settings; they do not live in ``common/settings.py``. Native OpenAI ``message.tool_calls`` are used as-is
 when the server emits them (enable auto tool-choice plus a tool-call parser).
+``tools``, ``tool_choice``, and ``parallel_tool_calls`` are forwarded on ``/chat``.
 Images are encoded with cv2 from BGR numpy, never Pillow. The RunPod worker
 honors ``MAX_CONCURRENCY`` via ``concurrency_modifier`` so several queue jobs
 await that HTTP server on one GPU. ``serve()`` registers ``/chat`` only (no

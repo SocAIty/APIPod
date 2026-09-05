@@ -433,6 +433,7 @@ class VLLMChat(Model):
         seed=None,
         tools=None,
         tool_choice=None,
+        parallel_tool_calls=None,
         stream: bool = False,
         logprobs: bool = False,
         top_logprobs=None,
@@ -460,6 +461,10 @@ class VLLMChat(Model):
                     if isinstance(tool_choice, (str, dict))
                     else tool_choice.model_dump(exclude_none=True)
                 )
+            if parallel_tool_calls is None:
+                body["parallel_tool_calls"] = True
+            else:
+                body["parallel_tool_calls"] = parallel_tool_calls
         elif tool_choice is not None:
             body["tool_choice"] = (
                 tool_choice
@@ -556,13 +561,15 @@ class VLLMChat(Model):
         seed=None,
         tools=None,
         tool_choice=None,
+        parallel_tool_calls=None,
         logprobs: bool = False,
         top_logprobs=None,
     ):
         self._ensure_started()
         body = self._request_body(
             messages, images, temperature, max_tokens, top_p, stop, seed,
-            tools, tool_choice, stream=False, logprobs=logprobs, top_logprobs=top_logprobs,
+            tools, tool_choice, parallel_tool_calls, stream=False,
+            logprobs=logprobs, top_logprobs=top_logprobs,
         )
         with httpx.Client(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
             response = client.post(self._completion_url(), json=body)
@@ -580,13 +587,15 @@ class VLLMChat(Model):
         seed=None,
         tools=None,
         tool_choice=None,
+        parallel_tool_calls=None,
         logprobs: bool = False,
         top_logprobs=None,
     ):
         self._ensure_started()
         body = self._request_body(
             messages, images, temperature, max_tokens, top_p, stop, seed,
-            tools, tool_choice, stream=False, logprobs=logprobs, top_logprobs=top_logprobs,
+            tools, tool_choice, parallel_tool_calls, stream=False,
+            logprobs=logprobs, top_logprobs=top_logprobs,
         )
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
             response = await client.post(self._completion_url(), json=body)
@@ -604,11 +613,12 @@ class VLLMChat(Model):
         seed=None,
         tools=None,
         tool_choice=None,
+        parallel_tool_calls=None,
     ) -> Iterator:
         self._ensure_started()
         body = self._request_body(
             messages, images, temperature, max_tokens, top_p, stop, seed,
-            tools, tool_choice, stream=True,
+            tools, tool_choice, parallel_tool_calls, stream=True,
         )
         state = _SseParseState()
         with httpx.Client(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
@@ -629,11 +639,12 @@ class VLLMChat(Model):
         seed=None,
         tools=None,
         tool_choice=None,
+        parallel_tool_calls=None,
     ) -> AsyncIterator:
         self._ensure_started()
         body = self._request_body(
             messages, images, temperature, max_tokens, top_p, stop, seed,
-            tools, tool_choice, stream=True,
+            tools, tool_choice, parallel_tool_calls, stream=True,
         )
         state = _SseParseState()
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:

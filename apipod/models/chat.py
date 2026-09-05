@@ -100,6 +100,7 @@ class Chat(Model):
         seed=None,
         tools=None,
         tool_choice=None,
+        parallel_tool_calls=None,
         logprobs: bool = False,
         top_logprobs=None,
     ):
@@ -114,6 +115,7 @@ class Chat(Model):
             seed=seed,
             tools=tools,
             tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
             logprobs=logprobs,
             top_logprobs=top_logprobs,
         )
@@ -129,6 +131,7 @@ class Chat(Model):
         seed=None,
         tools=None,
         tool_choice=None,
+        parallel_tool_calls=None,
         logprobs: bool = False,
         top_logprobs=None,
     ):
@@ -141,6 +144,7 @@ class Chat(Model):
             seed=seed,
             tools=tools,
             tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
             logprobs=logprobs,
             top_logprobs=top_logprobs,
         )
@@ -162,6 +166,7 @@ class Chat(Model):
         seed=None,
         tools=None,
         tool_choice=None,
+        parallel_tool_calls=None,
     ) -> Iterator:
         return self._call_engine(
             "stream",
@@ -174,6 +179,7 @@ class Chat(Model):
             seed=seed,
             tools=tools,
             tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
         )
 
     async def astream(
@@ -187,6 +193,7 @@ class Chat(Model):
         seed=None,
         tools=None,
         tool_choice=None,
+        parallel_tool_calls=None,
     ) -> AsyncIterator:
         kwargs = dict(
             images=images,
@@ -197,6 +204,7 @@ class Chat(Model):
             seed=seed,
             tools=tools,
             tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
         )
         if getattr(type(self._engine), "astream", None) is None:
             for delta in self.stream(messages, **kwargs):
