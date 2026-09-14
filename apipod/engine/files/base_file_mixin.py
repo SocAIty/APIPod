@@ -452,7 +452,9 @@ class _BaseFileHandlingMixin:
                 }
 
                 try:
-                    processed_files = self._read_upload_files(files_to_process, media_params, *args, **kwargs)
+                    # Do not forward request kwargs: a body field named ``files``
+                    # would collide with this method's first parameter.
+                    processed_files = self._read_upload_files(files_to_process, media_params)
                 except Exception as e:
                     raise FileUploadException(message=str(e))
 
@@ -479,7 +481,7 @@ class _BaseFileHandlingMixin:
                 }
 
                 try:
-                    processed_files = self._read_upload_files(files_to_process, media_params, *args, **kwargs)
+                    processed_files = self._read_upload_files(files_to_process, media_params)
                 except Exception as e:
                     raise FileUploadException(message=str(e))
 

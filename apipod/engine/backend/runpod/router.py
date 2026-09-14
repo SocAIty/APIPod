@@ -12,6 +12,7 @@ from apipod.engine.base_backend import _BaseBackend
 from apipod.engine.endpoint_config import build_plan, EndpointExecutionPlan
 from apipod.models import load_declared_models
 from apipod.engine.signatures.analysis import job_progress_param_names
+from apipod.engine.signatures.bind import bind_call_kwargs
 from apipod.engine.files.base_file_mixin import _BaseFileHandlingMixin
 from apipod.engine.backend.schema_resolve import (
     SchemaBinding,
@@ -208,6 +209,12 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
 
         return kwargs
 
+    def _prepare_invoke_kwargs(self, path, route_function, job, kwargs):
+        """Bind flattened form fields onto the source signature, then inject JobProgress."""
+        source = self._endpoint_source_funcs.get(path) or inspect.unwrap(route_function)
+        kwargs = bind_call_kwargs(source, kwargs)
+        return self._add_job_progress_to_kwargs(source, job, kwargs)
+
     def _router(self, path, job, **kwargs):
         """
         Internal app function that routes the path to the correct function.
@@ -230,12 +237,17 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         if route_function is None:
             raise Exception(f"Route {path} not found")
 
-        # Add job progress to kwargs if necessary
-        kwargs = self._add_job_progress_to_kwargs(route_function, job, kwargs)
+        source = self._endpoint_source_funcs.get(path) or inspect.unwrap(route_function)
+        kwargs = self._prepare_invoke_kwargs(path, route_function, job, kwargs)
 
         # Check for missing arguments
-        sig = inspect.signature(route_function)
-        missing_args = [arg for arg in sig.parameters if arg not in kwargs]
+        sig = inspect.signature(source)
+        missing_args = [
+            arg
+            for arg, param in sig.parameters.items()
+            if arg not in kwargs
+            and param.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        ]
         if missing_args:
             raise Exception(f"Arguments {missing_args} are missing")
 
@@ -245,7 +257,7 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         job_record.metrics.started_at = datetime.now(timezone.utc)
 
         try:
-            res = self.run_callable(route_function, **kwargs)
+            res = self.run_callable(source, **kwargs)
 
             # Streaming response: return the generator so the registered RunPod
             # handler (a true generator function via ``_runpod_handler``) can yield
@@ -285,10 +297,15 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
         if route_function is None:
             raise Exception(f"Route {path} not found")
 
-        kwargs = self._add_job_progress_to_kwargs(route_function, job, kwargs)
+        kwargs = self._prepare_invoke_kwargs(path, route_function, job, kwargs)
 
         sig = inspect.signature(route_function)
-        missing_args = [arg for arg in sig.parameters if arg not in kwargs]
+        missing_args = [
+            arg
+            for arg, param in sig.parameters.items()
+            if arg not in kwargs
+            and param.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        ]
         if missing_args:
             raise Exception(f"Arguments {missing_args} are missing")
 
