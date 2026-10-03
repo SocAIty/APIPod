@@ -17,6 +17,7 @@ from apipod.engine.base_backend import _BaseBackend
 from apipod.models import load_declared_models
 from apipod.engine.queue.queue_mixin import _QueueMixin
 from apipod.engine.backend.fastapi.file_handling_mixin import _fast_api_file_handling_mixin
+from apipod.engine.backend.fastapi.request_materializer import RequestMaterializer
 from apipod.engine.backend.fastapi.streaming_mixin import _FastAPIStreamingMixin
 from apipod.engine.utils import normalize_name, normalize_mount_prefix
 from apipod.engine.backend.fastapi.exception_handling import _FastAPIExceptionHandler
@@ -461,7 +462,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
             # Add job queue functionality and prepare for FastAPI file handling
             queue_decorated = queue_decorator(func)
 
-            upload_enabled = self._prepare_func_for_media_file_upload_with_fastapi(
+            upload_enabled = RequestMaterializer(plan.max_upload_file_size_mb).prepare(
                 queue_decorated, plan.max_upload_file_size_mb, plan=plan,
             )
             return fastapi_route_decorator(upload_enabled)
@@ -483,7 +484,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
 
         def decorator(func: Callable) -> Callable:
             result_modified = self._modify_result_decorator(func, plan, queued=False)
-            with_file_upload_signature = self._prepare_func_for_media_file_upload_with_fastapi(
+            with_file_upload_signature = RequestMaterializer(plan.max_upload_file_size_mb).prepare(
                 result_modified, plan.max_upload_file_size_mb, plan=plan,
             )
             return fastapi_route_decorator(with_file_upload_signature)
