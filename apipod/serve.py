@@ -25,13 +25,15 @@ from typing import List, Optional
 from pydantic import Field
 
 from apipod.api import APIPod
-from apipod.common.schemas import (
+from socaity_schemas.public.inference.language import (
     ChatCompletionRequest,
     EmbeddingRequest,
+)
+from socaity_schemas.public.inference.generation import (
     ImageGenerationRequest,
     MultimodalEmbeddingRequest,
 )
-from socaity_schemas import ImageFileModel
+from socaity_schemas.public.inference.media import ImageFileModel
 from apipod.common.settings import APIPOD_HOST, APIPOD_PORT
 from apipod.models.model import Model
 
@@ -141,6 +143,7 @@ def _chat_kwargs(request: ChatCompletionRequest, method) -> dict:
         "parallel_tool_calls": request.parallel_tool_calls,
         "logprobs": request.logprobs,
         "top_logprobs": request.top_logprobs,
+        "reasoning_effort": request.reasoning_effort,
     }
     supported = _method_params(method)
     unsupported = [

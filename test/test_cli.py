@@ -127,7 +127,7 @@ def test_build_generates_dockerfile(project, monkeypatch):
 
 
 def test_chat_kwargs_omit_unset_max_tokens():
-    from apipod.common.schemas import ChatCompletionRequest
+    from socaity_schemas.public.inference.language import ChatCompletionRequest
     from apipod.serve import _chat_kwargs
 
     def generate(self, messages, temperature=0.7, max_tokens=None):
@@ -139,6 +139,21 @@ def test_chat_kwargs_omit_unset_max_tokens():
 
     limited = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], max_tokens=8)
     assert _chat_kwargs(limited, generate)["max_tokens"] == 8
+
+
+def test_chat_kwargs_forward_reasoning_effort():
+    from socaity_schemas.public.inference.language import ChatCompletionRequest
+    from apipod.serve import _chat_kwargs
+
+    def thinking(self, messages, temperature=0.7, max_tokens=None, reasoning_effort=None):
+        return None
+
+    def minimal(self, messages, temperature=0.7, max_tokens=None):
+        return None
+
+    request = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], reasoning_effort="low")
+    assert _chat_kwargs(request, thinking)["reasoning_effort"] == "low"
+    assert "reasoning_effort" not in _chat_kwargs(request, minimal)
 
 
 def test_vllm_defaults_are_explicit_overrides():
@@ -161,6 +176,16 @@ def test_vllm_defaults_are_explicit_overrides():
     assert thinking._request_body([{"role": "user", "content": "hi"}])["chat_template_kwargs"] == {
         "enable_thinking": True,
     }
+    off = _unregistered(VLLMChat, "org/model", enable_thinking=False)
+    assert off._request_body(
+        [{"role": "user", "content": "hi"}], reasoning_effort="low"
+    )["chat_template_kwargs"] == {"enable_thinking": True, "reasoning_effort": "low"}
+    assert off._request_body(
+        [{"role": "user", "content": "hi"}], reasoning_effort="high"
+    )["chat_template_kwargs"] == {"enable_thinking": True, "reasoning_effort": "xhigh"}
+    assert off._request_body(
+        [{"role": "user", "content": "hi"}], reasoning_effort="none"
+    )["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def test_simulate_applies_intent_and_starts(project, monkeypatch):

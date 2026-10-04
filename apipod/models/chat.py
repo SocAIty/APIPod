@@ -98,6 +98,7 @@ class Chat(Model):
         parallel_tool_calls=None,
         logprobs: bool = False,
         top_logprobs=None,
+        reasoning_effort: Optional[str] = None,
     ):
         return self._call_engine(
             "generate",
@@ -113,6 +114,7 @@ class Chat(Model):
             parallel_tool_calls=parallel_tool_calls,
             logprobs=logprobs,
             top_logprobs=top_logprobs,
+            reasoning_effort=reasoning_effort,
         )
 
     async def agenerate(
@@ -129,6 +131,7 @@ class Chat(Model):
         parallel_tool_calls=None,
         logprobs: bool = False,
         top_logprobs=None,
+        reasoning_effort: Optional[str] = None,
     ):
         kwargs = dict(
             images=images,
@@ -142,6 +145,7 @@ class Chat(Model):
             parallel_tool_calls=parallel_tool_calls,
             logprobs=logprobs,
             top_logprobs=top_logprobs,
+            reasoning_effort=reasoning_effort,
         )
         if getattr(type(self._engine), "agenerate", None) is None:
             return self.generate(messages, **kwargs)
@@ -162,6 +166,7 @@ class Chat(Model):
         tools=None,
         tool_choice=None,
         parallel_tool_calls=None,
+        reasoning_effort: Optional[str] = None,
     ) -> Iterator:
         return self._call_engine(
             "stream",
@@ -175,6 +180,7 @@ class Chat(Model):
             tools=tools,
             tool_choice=tool_choice,
             parallel_tool_calls=parallel_tool_calls,
+            reasoning_effort=reasoning_effort,
         )
 
     async def astream(
@@ -189,6 +195,7 @@ class Chat(Model):
         tools=None,
         tool_choice=None,
         parallel_tool_calls=None,
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncIterator:
         kwargs = dict(
             images=images,
@@ -200,6 +207,7 @@ class Chat(Model):
             tools=tools,
             tool_choice=tool_choice,
             parallel_tool_calls=parallel_tool_calls,
+            reasoning_effort=reasoning_effort,
         )
         if getattr(type(self._engine), "astream", None) is None:
             for delta in self.stream(messages, **kwargs):

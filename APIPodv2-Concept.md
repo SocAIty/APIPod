@@ -658,11 +658,11 @@ APIPod exposes effective served limits. SPAINE or another agent runtime owns sum
 
 - `socaity-schemas/platform/ai_model.py`: represent artifact identity, capability evidence, and native context without runtime policy.
 - `socaity-schemas/platform/deployment.py`: add discriminated deployment intent and versioned runtime plan schemas.
-- `socaity_backend/sql/supabase/tables/004_ai_catalog.sql`: add recipe and plan persistence, then normalize artifacts incrementally.
+- `socaity_backend/sql/supabase/tables/004_catalog.sql`: add recipe and plan persistence, then normalize artifacts incrementally.
 - deployment RPCs: persist exact recipe, artifact, image, and plan snapshots.
 - `socaity_cron_jobs/data_scraping/hf_enrich.py` and `refresh_hf_metadata.py`: ingest repository configuration, not only card summaries.
 - new vLLM recipe sync job: validate pinned upstream YAML and upsert normalized recipes.
-- `ai_catalog/repository.py` and Typesense collection projections: expose managed readiness and runtime filters.
+- `catalog/repository.py` and Typesense collection projections: expose managed readiness and runtime filters.
 - `socaity_backend/core/hosting/deployment_analyzer.py`: analyze explicit managed and custom intents through one plan resolver.
 - `socaity_backend/endpoints/deployment.py`: accept managed model intent without requiring `apipod.json` or image upload.
 - `socaity_backend/core/hosting/hosting_manager.py`: provision only from persisted plans.
