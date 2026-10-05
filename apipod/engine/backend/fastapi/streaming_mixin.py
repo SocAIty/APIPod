@@ -30,6 +30,7 @@ from fastapi import Request, status
 from fastapi.exceptions import HTTPException
 from fastapi.responses import StreamingResponse
 
+from apipod.engine.backend.fastapi.request_materializer import RequestMaterializer
 from apipod.engine.endpoint_config import EndpointExecutionPlan
 from apipod.engine.jobs.base_job import JOB_STATUS, STREAM_WAIT_STATUSES
 from apipod.engine.streaming.stream_producer import StreamProducer
@@ -108,7 +109,7 @@ class _FastAPIStreamingMixin:
 
                 return StreamingResponse(generator, media_type="text/event-stream", headers=headers)
 
-            with_upload = self._prepare_func_for_media_file_upload_with_fastapi(
+            with_upload = RequestMaterializer(plan.max_upload_file_size_mb).prepare(
                 streaming_wrapper, plan.max_upload_file_size_mb, plan=plan,
             )
             return fastapi_route_decorator(with_upload)

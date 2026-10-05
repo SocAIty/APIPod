@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from socaity_cli import requires
-
 from apipod.models.transformers.base import Transformers
+from media_toolkit.utils.dependency_requirements import requires
+
 
 # Auto classes tried in coverage order: ImageTextToText covers Qwen-VL and most
 # open VLMs; MultimodalLM covers encoder-free unified models (e.g. Gemma 4).
@@ -15,7 +15,7 @@ _VLM_AUTO_CLASSES = ("AutoModelForImageTextToText", "AutoModelForMultimodalLM")
 def to_pil_image(image):
     """Convert a media-toolkit ImageFile, bytes, path/URL string or PIL image to RGB PIL."""
     from PIL import Image
-
+    import io
     if isinstance(image, Image.Image):
         return image.convert("RGB")
     if isinstance(image, (bytes, bytearray)):
@@ -35,7 +35,7 @@ class VLM(Transformers):
 
     default_embed_instruction = "Represent the user's input."
 
-    @requires("transformers", cli=False)
+    @requires("transformers")
     def load(self) -> None:
         import transformers
         from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
