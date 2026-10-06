@@ -97,13 +97,20 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
                     return Union[(*non_media_params, list_file_up_annot)]
                 return Union[(list_file_up_annot, *non_media_params)]
 
-            # Handle Union with MediaFile types
+            # Handle Union with MediaFile types. Optional[List[ImageFile]] is a
+            # union whose media member is a list; resolving that member as a
+            # single file rejects an empty array.
             if any(self._is_media_param(t) for t in args):
                 non_media_params = [t for t in args if not self._is_media_param(t)]
                 media_params = [t for t in args if self._is_media_param(t)]
                 resolved_mps = []
                 for mp in media_params:
-                    rmp = self._get_file_model_annotation(mp, is_list=False, max_upload_file_size_mb=max_upload_file_size_mb)
+                    if get_origin(mp) in (List, list, MediaList):
+                        rmp = self._get_media_file_annotation(mp, max_upload_file_size_mb)
+                    else:
+                        rmp = self._get_file_model_annotation(
+                            mp, is_list=False, max_upload_file_size_mb=max_upload_file_size_mb
+                        )
                     resolved_mps.append(rmp)
 
                 return Union[(*resolved_mps, *non_media_params)]
