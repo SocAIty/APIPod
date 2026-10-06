@@ -13,7 +13,7 @@ from types import UnionType
 from typing import Any, Callable, Optional, Union, get_args, get_origin
 
 from pydantic import BaseModel
-from socaity_schemas import FileModel
+from socaity_schemas.public.inference.media import FileModel
 
 from apipod.engine.signatures.analysis import is_injected_progress_param
 
