@@ -8,7 +8,12 @@ from pydantic import BaseModel
 
 from media_toolkit import media_from_any, MediaFile, MediaList, MediaDict, ImageFile, AudioFile, VideoFile
 from apipod.engine.signatures.upload import is_param_media_toolkit_file
-from socaity_schemas import AudioFileModel, FileModel, ImageFileModel, VideoFileModel
+from socaity_schemas.public.inference.media import (
+    AudioFileModel,
+    FileModel,
+    ImageFileModel,
+    VideoFileModel,
+)
 from apipod.common.exceptions import FileUploadException
 
 
@@ -103,9 +108,20 @@ def _coerce_wire_list(value: Any) -> Any:
     return value
 
 
+def _file_model_content_is_url(value: FileModel) -> bool:
+    content = getattr(value, "content", None)
+    return isinstance(content, str) and content.startswith(("http://", "https://"))
+
+
 def _parse_file_model_value(value: Any) -> Any:
-    """Convert FileModel instances (also inside lists) into parsed media-toolkit objects."""
+    """Convert FileModel instances (also inside lists) into parsed media-toolkit objects.
+
+    External http(s) URLs stay on the FileModel. Gate sanitize and the origin
+    fetch them; this layer must not download.
+    """
     if isinstance(value, FileModel):
+        if _file_model_content_is_url(value):
+            return value
         return media_from_any(
             data=value.model_dump(include={"file_name", "content_type", "content"}),
             type_hint=_media_type_for_file_model(type(value)),

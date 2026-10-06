@@ -31,9 +31,13 @@ from pydantic import BaseModel, Field, create_model
 from pydantic.json_schema import SkipJsonSchema
 from media_toolkit import MediaFile
 
-from socaity_schemas import (
+from socaity_schemas.platform.agent import (
     AgentChatCompletionRequest,
     AgentChatCompletionResponse,
+    SpaineChatCompletionRequest,
+    SpaineChatCompletionResponse,
+)
+from socaity_schemas.public.inference.language import (
     ChatCompletionChunk,
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -41,17 +45,17 @@ from socaity_schemas import (
     ChatStreamChoice,
     CompletionRequest,
     CompletionResponse,
-    CreateVoiceRequest,
     EmbeddingRequest,
     EmbeddingResponse,
+)
+from socaity_schemas.public.inference.generation import (
+    CreateVoiceRequest,
     Generation3DRequest,
     Generation3DResponse,
     ImageGenerationRequest,
     ImageGenerationResponse,
     MultimodalEmbeddingRequest,
     MultimodalEmbeddingResponse,
-    SpaineChatCompletionRequest,
-    SpaineChatCompletionResponse,
     SpeechRequest,
     SpeechResponse,
     TranscriptionRequest,

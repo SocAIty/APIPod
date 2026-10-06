@@ -132,9 +132,42 @@ def _content_parts(content, images=None) -> Any:
         if isinstance(content, str):
             parts.append({"type": "text", "text": content})
         else:
-            parts.extend(content or [])
+            parts.extend(_inline_content_images(content or []))
         return parts
-    return content
+    return _inline_content_images(content)
+
+
+def _image_part_url(part: Any) -> str:
+    if not isinstance(part, dict) or part.get("type") not in ("image", "image_url"):
+        return ""
+    image_url = part.get("image_url")
+    if isinstance(image_url, dict):
+        return str(image_url.get("url") or "")
+    if isinstance(image_url, str):
+        return image_url
+    return str(part.get("url") or "")
+
+
+def _remote_to_data_url(url: str) -> str:
+    """Download an http(s) image and encode it. vLLM rejects remote image_url."""
+    from media_toolkit import media_from_any
+
+    image = media_from_any(url, type_hint=ImageFile, use_temp_file=True)
+    return _to_data_url(image)
+
+
+def _inline_content_images(content) -> Any:
+    """Replace remote ``image_url`` parts with PNG data URIs."""
+    if not isinstance(content, list):
+        return content
+    out = []
+    for part in content:
+        url = _image_part_url(part)
+        if url.startswith(("http://", "https://")):
+            out.append({"type": "image_url", "image_url": {"url": _remote_to_data_url(url)}})
+        else:
+            out.append(part)
+    return out
 
 
 def _extend_without_duplicates(argv: List[str], extra: str) -> None:
@@ -537,7 +570,10 @@ class VLLMChat(Model):
             self.ensure_loaded()
 
     def _openai_messages(self, messages, images=None) -> List[dict]:
-        conversation = _normalize_messages(messages)
+        conversation = [
+            {**item, "content": _inline_content_images(item.get("content"))}
+            for item in _normalize_messages(messages)
+        ]
         if not images:
             return conversation
         attached = False

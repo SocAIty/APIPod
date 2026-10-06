@@ -143,7 +143,7 @@ Override an endpoint when customization changes the HTTP contract or request wor
 
 ```python
 from apipod import APIPod, Chat, serve
-from apipod.common.schemas import ChatCompletionRequest
+from socaity_schemas.public.inference.language import ChatCompletionRequest
 
 app = APIPod()
 model = Chat("Qwen/Qwen3.8-27B-FP8")

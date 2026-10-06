@@ -36,7 +36,7 @@ from fixtures import MATRIX, MatrixRow, build_fixture
 E2E_DIR = Path(__file__).resolve().parent
 FASTSDK_DIR = E2E_DIR.parent.parent.parent / "fastSDK"
 
-_DEPLOYMENT_ID_RE = re.compile(r"deployment_id=([0-9a-f-]{36})")
+_DEPLOYMENT_ID_RE = re.compile(r"(?:deployment_id=|--resume )([0-9a-f-]{36})")
 
 
 @dataclass
@@ -54,13 +54,46 @@ class RowResult:
         return self.error is None and self.fastsdk in ("passed", "skipped")
 
 
+def _adopt_api_key() -> None:
+    """Prefer ``SOCAITY_API_KEY`` from sibling ``.env`` files (same as Suite A)."""
+    if os.environ.get("SOCAITY_API_KEY", "").strip():
+        return
+    workspace = Path(__file__).resolve().parents[3]
+    for rel in ("socaity/.env", "socaity_backend/.env", "APIPodInferenceBE/.env"):
+        path = workspace / rel
+        if not path.is_file():
+            continue
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            if key.strip() != "SOCAITY_API_KEY":
+                continue
+            secret = val.strip().strip('"').strip("'")
+            if secret:
+                os.environ["SOCAITY_API_KEY"] = secret
+                return
+
+
+def _api_key() -> str:
+    _adopt_api_key()
+    env = os.environ.get("SOCAITY_API_KEY", "").strip()
+    if env:
+        return env
+    try:
+        from socaity_cli.credentials import get_api_key
+    except ImportError:
+        return ""
+    return get_api_key() or ""
+
+
 def backend_request(method: str, path: str) -> tuple[int, dict]:
     import httpx
 
     backend = os.environ.get("SOCAITY_BACKEND_URL", "https://webapi.socaity.ai").rstrip("/")
-    api_key = os.environ.get("SOCAITY_API_KEY", "")
     response = httpx.request(method, f"{backend}/{path}",
-                             headers={"Authorization": f"Bearer {api_key}"}, timeout=60)
+                             headers={"Authorization": f"Bearer {_api_key()}"}, timeout=60)
     try:
         return response.status_code, response.json()
     except ValueError:
@@ -185,6 +218,9 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=3600, help="Per-row timeout in seconds.")
     args = parser.parse_args()
 
+    _adopt_api_key()
+    os.environ.setdefault("SOCAITY_BACKEND_URL", "http://127.0.0.1:8000/")
+    os.environ.setdefault("APIPOD_GATE_URL", "http://127.0.0.1:8001")
     rows = [r for r in MATRIX if args.rows is None or r.row_id in args.rows]
     if not rows:
         print(f"No matching rows. Available: {[r.row_id for r in MATRIX]}")

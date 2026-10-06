@@ -124,7 +124,7 @@ Endpoint mapping: `generate`/`stream` -> `/chat`, `embed` or `embed_text` -> `/e
 APIPod provides built-in request/response schemas for common AI tasks (chat, TTS, image gen, etc.) that are fully OpenAI-compatible. This allows you to focus on the model logic while APIPod handles the boilerplate of validation, media parsing, and streaming.
 
 ```python
-from apipod.common.schemas import ChatCompletionRequest
+from socaity_schemas.public.inference.language import ChatCompletionRequest
 
 @app.endpoint("/chat")
 def chat(request: ChatCompletionRequest):

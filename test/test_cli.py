@@ -127,7 +127,7 @@ def test_build_generates_dockerfile(project, monkeypatch):
 
 
 def test_chat_kwargs_omit_unset_max_tokens():
-    from apipod.common.schemas import ChatCompletionRequest
+    from socaity_schemas.public.inference.language import ChatCompletionRequest
     from apipod.serve import _chat_kwargs
 
     def generate(self, messages, temperature=0.7, max_tokens=None):
@@ -142,7 +142,7 @@ def test_chat_kwargs_omit_unset_max_tokens():
 
 
 def test_chat_kwargs_forward_reasoning_effort():
-    from apipod.common.schemas import ChatCompletionRequest
+    from socaity_schemas.public.inference.language import ChatCompletionRequest
     from apipod.serve import _chat_kwargs
 
     def thinking(self, messages, temperature=0.7, max_tokens=None, reasoning_effort=None):
