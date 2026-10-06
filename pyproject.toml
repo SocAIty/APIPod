@@ -17,7 +17,7 @@ dependencies = [
     "fastapi",
     'python-multipart>=0.0.20',
     "media-toolkit>=0.02.22",
-    "socaity-schemas>=0.1.6",
+    "socaity-schemas>=0.1.9",
     "socaity-cli>=0.1.8",
     "jinja2",
     "toml",
