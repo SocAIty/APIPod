@@ -8,14 +8,21 @@ and returns the converted kwargs (media-toolkit objects, parsed models).
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from contextlib import AsyncExitStack
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from fastapi.exceptions import RequestValidationError
 from starlette.requests import Request
 
 from apipod.engine.backend.fastapi.file_handling_mixin import _fast_api_file_handling_mixin
 from apipod.engine.endpoint_config import EndpointExecutionPlan
+
+from fastapi.dependencies.utils import get_dependant, solve_dependencies
+try:
+    from fastapi.dependencies.utils import get_flat_dependant
+except ImportError:
+    get_flat_dependant = None
 
 
 class RequestMaterializer(_fast_api_file_handling_mixin):
@@ -58,17 +65,11 @@ class RequestMaterializer(_fast_api_file_handling_mixin):
 
 async def solve_request(func: Callable, request: Request) -> dict[str, Any]:
     """Run FastAPI dependency solving for ``func`` against ``request``."""
-    from fastapi.dependencies.utils import get_dependant, solve_dependencies
-
-    try:
-        from fastapi.dependencies.utils import get_flat_dependant
-    except ImportError:
-        get_flat_dependant = None
-
     dependant = get_dependant(path=request.scope.get("path") or request.url.path, call=func)
     flat = get_flat_dependant(dependant) if get_flat_dependant is not None else dependant
     embed = _embed_body_fields(flat)
     body = await _read_body(request, flat, embed)
+    body = _backfill_from_canonical_call(request, flat, embed, body)
     signature = inspect.signature(solve_dependencies).parameters
     async with AsyncExitStack() as stack:
         kwargs: dict[str, Any] = {"request": request, "dependant": dependant}
@@ -80,6 +81,35 @@ async def solve_request(func: Callable, request: Request) -> dict[str, Any]:
             kwargs["embed_body_fields"] = embed
         solved = await solve_dependencies(**kwargs)
     return _solved_values(solved)
+
+
+def _backfill_from_canonical_call(request: Request, flat: Any, embed: bool, body: Any) -> Any:
+    """When invoked via canonical ``POST /{operation_key}``, backfill path params from query or body."""
+    path_fields = getattr(flat, "path_params", None) or []
+    if path_fields:
+        scope_path = dict(request.scope.get("path_params") or {})
+        changed = False
+        for field in path_fields:
+            key = getattr(field, "alias", None) or field.name
+            if key in scope_path:
+                continue
+            if key in request.query_params:
+                scope_path[key] = request.query_params[key]
+                changed = True
+            elif isinstance(body, Mapping) and key in body:
+                scope_path[key] = body[key]
+                changed = True
+        if changed:
+            request.scope["path_params"] = scope_path
+
+    body_fields = getattr(flat, "body_params", None) or []
+    if not embed and len(body_fields) == 1 and isinstance(body, dict):
+        body_field = body_fields[0]
+        bkey = getattr(body_field, "alias", None) or body_field.name
+        model_fields = getattr(getattr(body_field, "type_", None), "model_fields", None)
+        if bkey in body and isinstance(body[bkey], dict) and (not model_fields or bkey not in model_fields):
+            body = body[bkey]
+    return body
 
 
 def _embed_body_fields(flat) -> bool:

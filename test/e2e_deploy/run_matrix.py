@@ -89,10 +89,10 @@ def _api_key() -> str:
 
 
 def backend_request(method: str, path: str) -> tuple[int, dict]:
-    import httpx
+    import httpx2
 
     backend = os.environ.get("SOCAITY_BACKEND_URL", "https://webapi.socaity.ai").rstrip("/")
-    response = httpx.request(method, f"{backend}/{path}",
+    response = httpx2.request(method, f"{backend}/{path}",
                              headers={"Authorization": f"Bearer {_api_key()}"}, timeout=60)
     try:
         return response.status_code, response.json()
@@ -187,7 +187,7 @@ def run_row(row: MatrixRow, expect: str, skip_fastsdk: bool, timeout_s: int) -> 
 
 def cleanup_prod_repository(service_id: Optional[str]) -> None:
     """Delete the promoted prod repo of a test service (local Harbor only)."""
-    import httpx
+    import httpx2
 
     harbor_url = os.environ.get("HARBOR_URL", "").rstrip("/")
     password = os.environ.get("HARBOR_ADMIN_PASSWORD", "")
@@ -195,14 +195,14 @@ def cleanup_prod_repository(service_id: Optional[str]) -> None:
         return
     auth = (os.environ.get("HARBOR_ADMIN_USER", "admin"), password)
     try:
-        repos = httpx.get(f"{harbor_url}/api/v2.0/projects/prod/repositories?page_size=100",
+        repos = httpx2.get(f"{harbor_url}/api/v2.0/projects/prod/repositories?page_size=100",
                           auth=auth, timeout=30).json() or []
         for repo in repos:
             name = repo.get("name", "")
             if name.endswith(service_id):
                 from urllib.parse import quote
                 encoded = quote(quote(name.split("/", 1)[1], safe=""), safe="")
-                httpx.delete(f"{harbor_url}/api/v2.0/projects/prod/repositories/{encoded}",
+                httpx2.delete(f"{harbor_url}/api/v2.0/projects/prod/repositories/{encoded}",
                              auth=auth, timeout=30)
                 print(f"  cleaned {name}")
     except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
