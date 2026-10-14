@@ -18,7 +18,7 @@ import time
 from collections import deque
 from typing import Any, AsyncIterator, Deque, Iterator, List, Optional, Union
 
-import httpx
+import httpx2
 from media_toolkit import ImageFile
 
 from apipod.common.chat_parsing import ChatOutputParser, parse_chat_output
@@ -547,7 +547,7 @@ class VLLMChat(Model):
             timeout = vllm_config.STARTUP_TIMEOUT
         url = f"{self._base_url}/health"
         deadline = time.monotonic() + timeout
-        with httpx.Client(timeout=10, trust_env=False) as client:
+        with httpx2.Client(timeout=10, trust_env=False) as client:
             while time.monotonic() < deadline:
                 if self._proc is not None and self._proc.poll() is not None:
                     raise self._startup_error(
@@ -557,7 +557,7 @@ class VLLMChat(Model):
                     if client.get(url).status_code == 200:
                         print("[apipod] vLLM is healthy", flush=True)
                         return
-                except httpx.HTTPError:
+                except httpx2.HTTPError:
                     pass
                 time.sleep(_HEALTH_POLL_S)
         raise self._startup_error(f"vLLM did not become healthy within {timeout}s")
@@ -713,13 +713,13 @@ class VLLMChat(Model):
         }
 
     @staticmethod
-    def _raise_for_status(response: httpx.Response) -> None:
+    def _raise_for_status(response: httpx2.Response) -> None:
         try:
             response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
+        except httpx2.HTTPStatusError as exc:
             try:
                 detail = response.text.strip()
-            except httpx.ResponseNotRead:
+            except httpx2.ResponseNotRead:
                 detail = ""
             suffix = f": {detail[:2000]}" if detail else ""
             raise RuntimeError(
@@ -749,7 +749,7 @@ class VLLMChat(Model):
             logprobs=logprobs, top_logprobs=top_logprobs,
             reasoning_effort=reasoning_effort,
         )
-        with httpx.Client(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
+        with httpx2.Client(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
             response = client.post(self._completion_url(), json=body)
             self._raise_for_status(response)
             return self._result_from_openai(response.json(), max_tokens)
@@ -777,7 +777,7 @@ class VLLMChat(Model):
             logprobs=logprobs, top_logprobs=top_logprobs,
             reasoning_effort=reasoning_effort,
         )
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
+        async with httpx2.AsyncClient(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
             response = await client.post(self._completion_url(), json=body)
             self._raise_for_status(response)
             return self._result_from_openai(response.json(), max_tokens)
@@ -804,7 +804,7 @@ class VLLMChat(Model):
         )
         print(f"[apipod] chat stream start {_prompt_stats(body)}", flush=True)
         state = _SseParseState()
-        with httpx.Client(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
+        with httpx2.Client(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
             with client.stream("POST", self._completion_url(), json=body) as response:
                 self._raise_for_status(response)
                 print(
@@ -837,7 +837,7 @@ class VLLMChat(Model):
         )
         print(f"[apipod] chat stream start {_prompt_stats(body)}", flush=True)
         state = _SseParseState()
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
+        async with httpx2.AsyncClient(timeout=_HTTP_TIMEOUT_S, trust_env=False) as client:
             async with client.stream("POST", self._completion_url(), json=body) as response:
                 self._raise_for_status(response)
                 print(

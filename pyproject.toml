@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "APIPod"
 version = "1.0.30"
 description="Create web-APIs for long-running tasks"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 authors = [
     { name = "SocAIty" }
 ]
@@ -21,7 +21,7 @@ dependencies = [
     "socaity-cli>=0.1.12",
     "jinja2",
     "toml",
-    "httpx",
+    "httpx2>=2.9",
 ]
 
 [project.scripts]

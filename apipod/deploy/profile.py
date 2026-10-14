@@ -62,6 +62,7 @@ LIGHTWEIGHT_PACKAGES: Set[str] = {
     "uvicorn",
     "fastapi",
     "httpx",
+    "httpx2",
     "pydantic",
     "python-multipart",
     "starlette",
