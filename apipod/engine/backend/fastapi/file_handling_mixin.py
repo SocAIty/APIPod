@@ -184,7 +184,8 @@ class _fast_api_file_handling_mixin(_BaseFileHandlingMixin):
         fastapi_dependencies_parameters = []
         field_definitions = {}
         for name, param in sig.parameters.items():
-            # Skip FastAPI dependency injections like Depends, Security, Body, Request, Response
+            # Author Body()/Form() stays as written. Body() publishes a JSON
+            # body; a bare model is rewritten to Form() below.
             if FastAPISignaturePolicies.is_fastapi_dependency(param):
                 fastapi_dependencies_parameters.append(param)
                 continue

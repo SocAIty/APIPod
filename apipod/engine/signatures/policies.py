@@ -56,6 +56,8 @@ class FastAPISignaturePolicies:
 
         Registered request schemas are mapped to JSON body semantics. All other
         non-file parameters keep form semantics for backward compatibility.
+        An author-supplied ``Body()`` or ``Form()`` never reaches this helper:
+        ``Body()`` is how a custom model opts into a JSON body.
         """
         normalized_default = None if is_optional else default
         if cls.is_supported_request_schema(annotation):
