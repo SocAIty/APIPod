@@ -23,6 +23,7 @@ from apipod.engine.utils import normalize_name, normalize_mount_prefix
 from apipod.engine.backend.fastapi.exception_handling import _FastAPIExceptionHandler
 from apipod.engine.backend.schema_resolve import wrap_schema_response
 from apipod.engine.jobs.enqueue_payload import is_enqueue_payload
+from apipod.engine.signatures.json_body import stamp_json_body_names
 
 
 class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_handling_mixin, _FastAPIStreamingMixin, _FastAPIExceptionHandler):
@@ -177,6 +178,7 @@ class SocaityFastAPIRouter(APIRouter, _BaseBackend, _QueueMixin, _fast_api_file_
         }
 
         self.app.openapi_schema["info"]["apipod"] = manifest
+        stamp_json_body_names(self.app.openapi_schema, self.routes)
         return self.app.openapi_schema
 
     def get_job(self, job_id: str, return_format: str = 'json') -> JobResult:

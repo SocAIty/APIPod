@@ -1,9 +1,8 @@
 """Bind incoming job kwargs onto an endpoint signature.
 
-FastAPI inlines pydantic model fields as form properties in OpenAPI. The gate
-remounts those flattened fields and forwards them as RunPod ``input``. The
-worker still calls the original function (``def execute(request: ExecuteRequest)``),
-so this helper rebuilds the model from the flattened keys.
+A bare pydantic parameter is published as form fields. The gate forwards those
+flattened keys, and this helper rebuilds the model. An explicit ``Body()``
+arrives as one object under that parameter's name and is validated directly.
 """
 
 from __future__ import annotations

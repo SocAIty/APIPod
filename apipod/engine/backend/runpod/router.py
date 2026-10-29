@@ -13,6 +13,7 @@ from apipod.engine.endpoint_config import build_plan, EndpointExecutionPlan
 from apipod.models import load_declared_models
 from apipod.engine.signatures.analysis import job_progress_param_names
 from apipod.engine.signatures.bind import bind_call_kwargs
+from apipod.engine.signatures.json_body import stamp_json_body_names
 from apipod.engine.files.base_file_mixin import _BaseFileHandlingMixin
 from apipod.engine.backend.schema_resolve import (
     SchemaBinding,
@@ -576,6 +577,7 @@ class SocaityRunpodRouter(_BaseBackend, _BaseFileHandlingMixin):
             "simulate": self.simulate,
         }
         schema["info"]["apipod"] = manifest
+        stamp_json_body_names(schema, fastapi_routes)
 
         return schema
 
