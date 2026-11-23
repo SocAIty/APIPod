@@ -38,6 +38,8 @@ def test_vllm_serve_argv_skips_duplicate_bool_without_eating_next_flag():
 
 def test_cached_tokens_reads_openai_and_vllm_fields():
     assert _cached_tokens({"prompt_tokens_details": {"cached_tokens": 32000}}) == 32000
+    assert _cached_tokens({"prompt_tokens_details": {"num_cached_tokens": 5}}) == 5
     assert _cached_tokens({"cached_tokens": 12}) == 12
     assert _cached_tokens({"num_cached_tokens": 7}) == 7
+    assert _cached_tokens({"prefix_cached_tokens": 3}) == 3
     assert _cached_tokens({"prompt_tokens": 9}) is None

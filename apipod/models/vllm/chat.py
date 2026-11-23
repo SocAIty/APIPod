@@ -359,13 +359,41 @@ def _prompt_stats(body: dict) -> str:
 
 
 def _cached_tokens(usage: dict) -> Any:
+    """Best-effort prefix-cache hit count from OpenAI / vLLM usage shapes."""
     details = usage.get("prompt_tokens_details")
-    if isinstance(details, dict) and details.get("cached_tokens") is not None:
-        return details.get("cached_tokens")
-    for key in ("cached_tokens", "num_cached_tokens"):
+    if isinstance(details, dict):
+        for key in ("cached_tokens", "cached_tokens_total", "num_cached_tokens"):
+            if details.get(key) is not None:
+                return details.get(key)
+    for key in (
+        "cached_tokens",
+        "num_cached_tokens",
+        "prefix_cached_tokens",
+        "prompt_cached_tokens",
+    ):
         if usage.get(key) is not None:
             return usage.get(key)
     return None
+
+
+def _usage_payload(usage: dict) -> dict:
+    """Forward token counts and preserve cache details for billing / logs."""
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    payload = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": int(
+            usage.get("total_tokens") or (prompt_tokens + completion_tokens)
+        ),
+    }
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict) and details:
+        payload["prompt_tokens_details"] = details
+    cached = _cached_tokens(usage)
+    if cached is not None:
+        payload["cached_tokens"] = cached
+    return payload
 
 
 def _elapsed_ms(state: _SseParseState) -> int:
@@ -383,13 +411,18 @@ def _log_first_delta(state: _SseParseState, kind: str) -> None:
 
 
 def _log_usage(state: _SseParseState, usage: dict) -> None:
-    if state.logged_usage:
+    """Keep the richest usage chunk; print once when cache detail appears or at end."""
+    prev = state.usage if isinstance(state.usage, dict) else None
+    state.usage = usage
+    cached = _cached_tokens(usage)
+    prev_cached = _cached_tokens(prev) if prev else None
+    richer = cached is not None and prev_cached is None
+    if state.logged_usage and not richer:
         return
     state.logged_usage = True
-    state.usage = usage
     print(
         f"[apipod] chat usage prompt_tokens={usage.get('prompt_tokens')} "
-        f"cached_tokens={_cached_tokens(usage)} "
+        f"cached_tokens={cached} "
         f"completion_tokens={usage.get('completion_tokens')}",
         flush=True,
     )
@@ -403,7 +436,12 @@ class VLLMChat(Model):
     the transformers last-token recipe.
     """
 
-    def __init__(self, weights: Union[IncludeHandle, str], *, enable_thinking: Optional[bool] = None):
+    def __init__(
+        self,
+        weights: Union[IncludeHandle, str],
+        *,
+        enable_thinking: Optional[bool] = False,
+    ):
         if isinstance(weights, str):
             weights = include_hf(weights)
         if weights.kind != "hf":
@@ -412,6 +450,8 @@ class VLLMChat(Model):
                 "Pass an HF model id string or an include_hf() handle."
             )
         self.weights = weights
+        # Default off: Qwen chat templates think-on when kwargs are omitted, and
+        # reasoning tokens dominate nested-agent TTFT.
         self.enable_thinking = enable_thinking
         self._proc: Optional[subprocess.Popen] = None
         self._log_tail: Deque[str] = deque(maxlen=80)
@@ -563,7 +603,18 @@ class VLLMChat(Model):
         raise self._startup_error(f"vLLM did not become healthy within {timeout}s")
 
     def warmup(self) -> None:
-        self.generate([{"role": "user", "content": "ping"}], max_tokens=1)
+        """Prime compile / Triton shapes used by agent prefills and MTP decode."""
+        long_prompt = [{"role": "user", "content": ("ping " * 256).strip()}]
+        self.generate(long_prompt, max_tokens=8)
+        # Second hop exercises prefix-cache reuse on a stable prefix.
+        self.generate(
+            [
+                *long_prompt,
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "continue"},
+            ],
+            max_tokens=8,
+        )
 
     def _ensure_started(self) -> None:
         if not self._apipod_loaded and not self._apipod_loading:
@@ -663,8 +714,8 @@ class VLLMChat(Model):
         reasoning = message.get("reasoning_content") or message.get("reasoning")
         native_tools = message.get("tool_calls")
         usage = payload.get("usage") or {}
-        prompt_tokens = int(usage.get("prompt_tokens") or 0)
         completion_tokens = int(usage.get("completion_tokens") or 0)
+        usage_out = _usage_payload(usage)
 
         if native_tools:
             assistant = {
@@ -680,11 +731,7 @@ class VLLMChat(Model):
                     "message": assistant,
                     "finish_reason": choice.get("finish_reason") or "tool_calls",
                 }],
-                "usage": {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": prompt_tokens + completion_tokens,
-                },
+                "usage": usage_out,
             }
 
         parsed = parse_chat_output(text)
@@ -705,11 +752,7 @@ class VLLMChat(Model):
             finish_reason = choice.get("finish_reason") or "stop"
         return {
             "choices": [{"index": 0, "message": parsed, "finish_reason": finish_reason}],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            },
+            "usage": usage_out,
         }
 
     @staticmethod

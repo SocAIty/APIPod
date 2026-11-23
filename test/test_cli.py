@@ -170,7 +170,8 @@ def test_vllm_defaults_are_explicit_overrides():
     engine = _unregistered(VLLMChat, "org/model")
     body = engine._request_body([{"role": "user", "content": "hi"}])
     assert "max_tokens" not in body
-    assert "chat_template_kwargs" not in body
+    # Default enable_thinking=False so Qwen templates cannot think-on by omission.
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
     assert engine._request_body([{"role": "user", "content": "hi"}], max_tokens=16)["max_tokens"] == 16
     thinking = _unregistered(VLLMChat, "org/model", enable_thinking=True)
     assert thinking._request_body([{"role": "user", "content": "hi"}])["chat_template_kwargs"] == {

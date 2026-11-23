@@ -54,7 +54,7 @@ class Chat(Model):
         weights: Union[IncludeHandle, str],
         *,
         engine: Optional[str] = None,
-        enable_thinking: Optional[bool] = None,
+        enable_thinking: Optional[bool] = False,
     ):
         self.engine_name = _pick_engine(engine)
         if self.engine_name == "vllm":
