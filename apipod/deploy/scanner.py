@@ -23,8 +23,9 @@ _PRESERVE_ON_RESCAN = (
     "disk_gb",
     "gpu_vram_gb",
     "min_gpu_vram_gb",
+    "gpu_ids",
 )
-_RESOURCE_KEYS = ("compute_tier", "disk_gb", "gpu_vram_gb", "min_gpu_vram_gb")
+_RESOURCE_KEYS = ("compute_tier", "disk_gb", "gpu_vram_gb", "min_gpu_vram_gb", "gpu_ids")
 
 
 @dataclass

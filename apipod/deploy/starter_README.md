@@ -15,7 +15,7 @@ apipod-deploy/         ← apipod.json, Dockerfile (this folder)
 2. Run `socaity build` from the project root to refresh the Dockerfile and optionally build the image.
 3. Deploy the image to your provider (e.g. RunPod Serverless).
 
-`disk_gb` is the writable RunPod container overlay (not the image size). `gpu_vram_gb` is the minimum GPU VRAM used to pick a SKU. Scan fills both from declared Hugging Face model names when they are unset. Edit them in `apipod.json` to override.
+`disk_gb` is the writable RunPod container overlay (not the image size). `gpu_vram_gb` is the minimum GPU VRAM used to pick a SKU. Optional `gpu_ids` pins a RunPod serverless pool (e.g. `ADA_48_PRO` for L40S). Scan fills disk/VRAM from declared Hugging Face model names when they are unset. Edit them in `apipod.json` to override.
 
 ## RunPod serverless notes
 
